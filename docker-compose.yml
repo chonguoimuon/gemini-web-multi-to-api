@@ -1,0 +1,37 @@
+services:
+  app:
+    build: .
+    container_name: app
+    ports:
+      - "4982:4982"
+    env_file:
+      - .env
+    environment:
+      - PORT=4982
+      - APP_ENV=production
+      - ADMIN_API_KEY=${ADMIN_API_KEY}
+      - GEMINI_1PSID=${GEMINI_1PSID}
+      - GEMINI_1PSIDTS=${GEMINI_1PSIDTS}
+      - GEMINI_REFRESH_INTERVAL=30
+      - GEMINI_MAX_RETRIES=3
+    restart: unless-stopped
+    volumes:
+      - ./data:/home/appuser/data
+      - ./cookies:/home/appuser/.cookies
+    tmpfs:
+      - /tmp
+      - /home/appuser/.cache
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--quiet",
+          "--tries=1",
+          "--spider",
+          "http://localhost:4982/health",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

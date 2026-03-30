@@ -1,0 +1,1325 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "description": "✨Reverse-engineered API for Gemini web app. It can be used as a genuine API key from OpenAI, Gemini, and Claude.",
+        "title": "Gemini Web To API",
+        "contact": {},
+        "version": "1.0"
+    },
+    "basePath": "/",
+    "paths": {
+        "/admin/v1/accounts": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns the status and metrics of all configured Gemini cookie accounts",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Admin"
+                ],
+                "summary": "List All Cookie Accounts",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/gemini-web-to-api_internal_modules_providers.AccountConfig"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Injects a new __Secure-1PSID and __Secure-1PSIDTS for load balancing and rotation",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Admin"
+                ],
+                "summary": "Add or Update a Cookie Account",
+                "parameters": [
+                    {
+                        "description": "Account Details",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_modules_admin.AddAccountRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/v1/accounts/{id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Removes an account from the Rotation pool",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Admin"
+                ],
+                "summary": "Delete a Cookie Account",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Account ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/v1/accounts/{id}/test": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Forces an immediate check or chat generation on the designated account",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Admin"
+                ],
+                "summary": "Test Account Rotation",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Account ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/claude/v1/messages": {
+            "post": {
+                "description": "Sends a message to the Claude model",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Claude"
+                ],
+                "summary": "Send Message (Claude)",
+                "parameters": [
+                    {
+                        "description": "Message Request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/gemini-web-to-api_internal_modules_claude_dto.MessageRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/gemini-web-to-api_internal_modules_claude_dto.MessageResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/claude/v1/messages/count_tokens": {
+            "post": {
+                "description": "Estimates the number of tokens for a request",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Claude"
+                ],
+                "summary": "Count Tokens (Claude)",
+                "parameters": [
+                    {
+                        "description": "Message Request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/gemini-web-to-api_internal_modules_claude_dto.MessageRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/claude/v1/models": {
+            "get": {
+                "description": "Returns a list of available Claude models",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Claude"
+                ],
+                "summary": "List Claude Models",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/claude/v1/models/{model_id}": {
+            "get": {
+                "description": "Get details of a specific Claude model",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Claude"
+                ],
+                "summary": "Get Claude Model",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Model ID",
+                        "name": "model_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/gemini/v1beta/deepresearch": {
+            "post": {
+                "description": "Performs deep research on a topic using Gemini, searching the web and synthesizing a comprehensive report. This is a blocking call that returns only when research is complete (may take several minutes).",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Gemini"
+                ],
+                "summary": "Deep Research (synchronous)",
+                "parameters": [
+                    {
+                        "description": "Deep Research Request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.DeepResearchRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.DeepResearchResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request – query is missing",
+                        "schema": {
+                            "type": "object"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                }
+            }
+        },
+        "/gemini/v1beta/deepresearch/create": {
+            "post": {
+                "description": "Start a deep research task. Set stream=true for realtime SSE progress, or omit for background polling.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Gemini"
+                ],
+                "summary": "Create Deep Research Interaction",
+                "parameters": [
+                    {
+                        "description": "Interaction Create Request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.InteractionCreateRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.InteractionResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/gemini/v1beta/deepresearch/stream": {
+            "post": {
+                "description": "Streams deep research progress in real-time using Server-Sent Events (SSE).",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "text/event-stream"
+                ],
+                "tags": [
+                    "Gemini"
+                ],
+                "summary": "Deep Research (streaming SSE)",
+                "parameters": [
+                    {
+                        "description": "Deep Research Request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.DeepResearchRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "SSE stream of DeepResearchStreamEvent JSON objects",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request – query is missing",
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                }
+            }
+        },
+        "/gemini/v1beta/deepresearch/{id}": {
+            "get": {
+                "description": "Returns the current status and result of a background research task.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Gemini"
+                ],
+                "summary": "Get Deep Research Interaction status",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Task ID returned by create",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.InteractionResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                }
+            }
+        },
+        "/gemini/v1beta/models": {
+            "get": {
+                "description": "Returns a list of models supported by the Gemini API",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Gemini"
+                ],
+                "summary": "List Gemini Models",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.GeminiModelsResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/gemini/v1beta/models/{model}:generateContent": {
+            "post": {
+                "description": "Generates content using the Gemini model",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Gemini"
+                ],
+                "summary": "Generate Content (Gemini)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Model ID",
+                        "name": "model",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Generate Request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.GeminiGenerateRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.GeminiGenerateResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/gemini/v1beta/models/{model}:streamGenerateContent": {
+            "post": {
+                "description": "Streams generated content using the Gemini model",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Gemini"
+                ],
+                "summary": "Stream Generate Content (Gemini)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Model ID",
+                        "name": "model",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Generate Request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.GeminiGenerateRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Chunked response",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/health": {
+            "get": {
+                "description": "Returns the health status of the service. Used by Docker/K8s/cloud platforms to monitor the service.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "System"
+                ],
+                "summary": "Health check",
+                "responses": {
+                    "200": {
+                        "description": "Service is healthy",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "service": {
+                                    "type": "string"
+                                },
+                                "status": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/openai/v1/chat/completions": {
+            "post": {
+                "description": "Generates a completion for the chat message",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "OpenAI"
+                ],
+                "summary": "Chat Completions (OpenAI)",
+                "parameters": [
+                    {
+                        "description": "Chat Completion Request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/gemini-web-to-api_internal_modules_openai_dto.ChatCompletionRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/gemini-web-to-api_internal_modules_openai_dto.ChatCompletionResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/openai/v1/models": {
+            "get": {
+                "description": "Returns a list of models supported by the OpenAI-compatible API",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "OpenAI"
+                ],
+                "summary": "List OpenAI Models",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/gemini-web-to-api_internal_commons_models.ModelListResponse"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "gemini-web-to-api_internal_commons_models.Message": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string"
+                },
+                "role": {
+                    "type": "string"
+                }
+            }
+        },
+        "gemini-web-to-api_internal_commons_models.ModelData": {
+            "type": "object",
+            "properties": {
+                "created": {
+                    "type": "integer"
+                },
+                "created_at": {
+                    "type": "integer"
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "object": {
+                    "type": "string"
+                },
+                "owned_by": {
+                    "type": "string"
+                },
+                "type": {
+                    "type": "string"
+                }
+            }
+        },
+        "gemini-web-to-api_internal_commons_models.ModelListResponse": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/gemini-web-to-api_internal_commons_models.ModelData"
+                    }
+                },
+                "object": {
+                    "type": "string"
+                }
+            }
+        },
+        "gemini-web-to-api_internal_commons_models.Usage": {
+            "type": "object",
+            "properties": {
+                "completion_tokens": {
+                    "type": "integer"
+                },
+                "completion_tokens_details": {},
+                "input_tokens": {
+                    "type": "integer"
+                },
+                "output_tokens": {
+                    "type": "integer"
+                },
+                "prompt_tokens": {
+                    "type": "integer"
+                },
+                "prompt_tokens_details": {},
+                "total_tokens": {
+                    "type": "integer"
+                }
+            }
+        },
+        "gemini-web-to-api_internal_modules_claude_dto.ConfigContent": {
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string"
+                },
+                "type": {
+                    "description": "\"text\"",
+                    "type": "string"
+                }
+            }
+        },
+        "gemini-web-to-api_internal_modules_claude_dto.MessageRequest": {
+            "type": "object",
+            "properties": {
+                "max_tokens": {
+                    "type": "integer"
+                },
+                "messages": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/gemini-web-to-api_internal_commons_models.Message"
+                    }
+                },
+                "model": {
+                    "type": "string"
+                },
+                "stream": {
+                    "type": "boolean"
+                },
+                "system": {
+                    "type": "string"
+                }
+            }
+        },
+        "gemini-web-to-api_internal_modules_claude_dto.MessageResponse": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/gemini-web-to-api_internal_modules_claude_dto.ConfigContent"
+                    }
+                },
+                "id": {
+                    "type": "string"
+                },
+                "model": {
+                    "type": "string"
+                },
+                "role": {
+                    "description": "\"assistant\"",
+                    "type": "string"
+                },
+                "stop_reason": {
+                    "type": "string"
+                },
+                "type": {
+                    "description": "\"message\"",
+                    "type": "string"
+                },
+                "usage": {
+                    "$ref": "#/definitions/gemini-web-to-api_internal_commons_models.Usage"
+                }
+            }
+        },
+        "gemini-web-to-api_internal_modules_gemini_dto.Candidate": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.Content"
+                },
+                "finishMessage": {
+                    "type": "string"
+                },
+                "finishReason": {
+                    "type": "string"
+                },
+                "index": {
+                    "type": "integer"
+                }
+            }
+        },
+        "gemini-web-to-api_internal_modules_gemini_dto.Content": {
+            "type": "object",
+            "properties": {
+                "parts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.Part"
+                    }
+                },
+                "role": {
+                    "type": "string"
+                }
+            }
+        },
+        "gemini-web-to-api_internal_modules_gemini_dto.DeepResearchRequest": {
+            "type": "object",
+            "properties": {
+                "language": {
+                    "description": "Language for the response (optional, e.g. \"en\", \"vi\")",
+                    "type": "string"
+                },
+                "max_sources": {
+                    "description": "MaxSources maximum number of web sources to consult (optional)",
+                    "type": "integer"
+                },
+                "model": {
+                    "description": "Model to use (optional, defaults to best available)",
+                    "type": "string"
+                },
+                "query": {
+                    "description": "Query is the research topic or question",
+                    "type": "string"
+                }
+            }
+        },
+        "gemini-web-to-api_internal_modules_gemini_dto.DeepResearchResponse": {
+            "type": "object",
+            "properties": {
+                "completed_at": {
+                    "description": "CompletedAt timestamp (Unix seconds), 0 if not completed",
+                    "type": "integer"
+                },
+                "created_at": {
+                    "description": "CreatedAt timestamp (Unix seconds)",
+                    "type": "integer"
+                },
+                "duration_ms": {
+                    "description": "DurationMs total research duration in milliseconds",
+                    "type": "integer"
+                },
+                "error": {
+                    "description": "Error message if status is \"failed\"",
+                    "type": "string"
+                },
+                "id": {
+                    "description": "ID of this research session",
+                    "type": "string"
+                },
+                "model": {
+                    "description": "Model used",
+                    "type": "string"
+                },
+                "query": {
+                    "description": "Query that was researched",
+                    "type": "string"
+                },
+                "sources": {
+                    "description": "Sources used in research",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.ResearchSource"
+                    }
+                },
+                "status": {
+                    "description": "Status: \"in_progress\", \"completed\", \"failed\"",
+                    "type": "string"
+                },
+                "steps": {
+                    "description": "Steps of research performed",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.ResearchStep"
+                    }
+                },
+                "summary": {
+                    "description": "Summary is the synthesized research report",
+                    "type": "string"
+                }
+            }
+        },
+        "gemini-web-to-api_internal_modules_gemini_dto.GeminiGenerateRequest": {
+            "type": "object",
+            "properties": {
+                "contents": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.Content"
+                    }
+                },
+                "generationConfig": {
+                    "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.GenerationConfig"
+                },
+                "safety_settings": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "gemini-web-to-api_internal_modules_gemini_dto.GeminiGenerateResponse": {
+            "type": "object",
+            "properties": {
+                "candidates": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.Candidate"
+                    }
+                },
+                "usageMetadata": {
+                    "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.UsageMetadata"
+                }
+            }
+        },
+        "gemini-web-to-api_internal_modules_gemini_dto.GeminiModel": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "displayName": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "supportedGenerationMethods": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "gemini-web-to-api_internal_modules_gemini_dto.GeminiModelsResponse": {
+            "type": "object",
+            "properties": {
+                "models": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.GeminiModel"
+                    }
+                }
+            }
+        },
+        "gemini-web-to-api_internal_modules_gemini_dto.GenerationConfig": {
+            "type": "object",
+            "properties": {
+                "maxOutputTokens": {
+                    "type": "integer"
+                },
+                "temperature": {
+                    "type": "number"
+                },
+                "topK": {
+                    "type": "integer"
+                },
+                "topP": {
+                    "type": "number"
+                }
+            }
+        },
+        "gemini-web-to-api_internal_modules_gemini_dto.InlineData": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "string"
+                },
+                "mimeType": {
+                    "type": "string"
+                }
+            }
+        },
+        "gemini-web-to-api_internal_modules_gemini_dto.InteractionCreateRequest": {
+            "type": "object",
+            "properties": {
+                "agent": {
+                    "description": "Agent selects the research mode (e.g. \"deep-research-pro-preview-12-2025\")",
+                    "type": "string"
+                },
+                "background": {
+                    "description": "Background if true the task runs asynchronously (always true for this endpoint)",
+                    "type": "boolean"
+                },
+                "input": {
+                    "description": "Input is the research query / topic",
+                    "type": "string"
+                },
+                "language": {
+                    "description": "Language for the output report",
+                    "type": "string"
+                },
+                "max_sources": {
+                    "description": "MaxSources max number of web sources to consult",
+                    "type": "integer"
+                },
+                "stream": {
+                    "description": "Stream if true the server returns an SSE stream of InteractionResponse events",
+                    "type": "boolean"
+                }
+            }
+        },
+        "gemini-web-to-api_internal_modules_gemini_dto.InteractionOutput": {
+            "type": "object",
+            "properties": {
+                "text": {
+                    "description": "Text is the research report text",
+                    "type": "string"
+                }
+            }
+        },
+        "gemini-web-to-api_internal_modules_gemini_dto.InteractionResponse": {
+            "type": "object",
+            "properties": {
+                "completed_at": {
+                    "description": "CompletedAt Unix timestamp (0 if not yet completed)",
+                    "type": "integer"
+                },
+                "created_at": {
+                    "description": "CreatedAt Unix timestamp",
+                    "type": "integer"
+                },
+                "duration_ms": {
+                    "description": "DurationMs total research duration in milliseconds",
+                    "type": "integer"
+                },
+                "error": {
+                    "description": "Error message if status is \"failed\"",
+                    "type": "string"
+                },
+                "id": {
+                    "description": "ID unique task identifier",
+                    "type": "string"
+                },
+                "outputs": {
+                    "description": "Outputs list of output items (non-empty when completed)",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.InteractionOutput"
+                    }
+                },
+                "query": {
+                    "description": "Query that was researched",
+                    "type": "string"
+                },
+                "sources": {
+                    "description": "Sources consulted during research",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.ResearchSource"
+                    }
+                },
+                "status": {
+                    "description": "Status: \"in_progress\", \"completed\", \"failed\"",
+                    "type": "string"
+                },
+                "steps": {
+                    "description": "Steps research steps performed",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.ResearchStep"
+                    }
+                }
+            }
+        },
+        "gemini-web-to-api_internal_modules_gemini_dto.Part": {
+            "type": "object",
+            "properties": {
+                "inlineData": {
+                    "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.InlineData"
+                },
+                "text": {
+                    "type": "string"
+                }
+            }
+        },
+        "gemini-web-to-api_internal_modules_gemini_dto.ResearchSource": {
+            "type": "object",
+            "properties": {
+                "domain": {
+                    "description": "Domain of the source",
+                    "type": "string"
+                },
+                "snippet": {
+                    "description": "Snippet relevant excerpt from the source",
+                    "type": "string"
+                },
+                "title": {
+                    "description": "Title of the source page",
+                    "type": "string"
+                },
+                "url": {
+                    "description": "URL of the source",
+                    "type": "string"
+                }
+            }
+        },
+        "gemini-web-to-api_internal_modules_gemini_dto.ResearchStep": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "description": "Description of what this step did",
+                    "type": "string"
+                },
+                "query": {
+                    "description": "Query used in this step (for search steps)",
+                    "type": "string"
+                },
+                "result": {
+                    "description": "Result summary of this step",
+                    "type": "string"
+                },
+                "step_number": {
+                    "description": "StepNumber ordinal step number",
+                    "type": "integer"
+                },
+                "type": {
+                    "description": "Type of step: \"search\", \"read\", \"synthesize\", \"outline\", \"write\"",
+                    "type": "string"
+                }
+            }
+        },
+        "gemini-web-to-api_internal_modules_gemini_dto.UsageMetadata": {
+            "type": "object",
+            "properties": {
+                "candidatesTokenCount": {
+                    "type": "integer"
+                },
+                "promptTokenCount": {
+                    "type": "integer"
+                },
+                "totalTokenCount": {
+                    "type": "integer"
+                }
+            }
+        },
+        "gemini-web-to-api_internal_modules_openai_dto.ChatCompletionRequest": {
+            "type": "object",
+            "properties": {
+                "max_tokens": {
+                    "type": "integer"
+                },
+                "messages": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/gemini-web-to-api_internal_commons_models.Message"
+                    }
+                },
+                "model": {
+                    "type": "string"
+                },
+                "stream": {
+                    "type": "boolean"
+                },
+                "temperature": {
+                    "type": "number"
+                }
+            }
+        },
+        "gemini-web-to-api_internal_modules_openai_dto.ChatCompletionResponse": {
+            "type": "object",
+            "properties": {
+                "choices": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/gemini-web-to-api_internal_modules_openai_dto.Choice"
+                    }
+                },
+                "created": {
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "model": {
+                    "type": "string"
+                },
+                "object": {
+                    "type": "string"
+                },
+                "system_fingerprint": {},
+                "usage": {
+                    "$ref": "#/definitions/gemini-web-to-api_internal_commons_models.Usage"
+                }
+            }
+        },
+        "gemini-web-to-api_internal_modules_openai_dto.Choice": {
+            "type": "object",
+            "properties": {
+                "finish_reason": {
+                    "type": "string"
+                },
+                "index": {
+                    "type": "integer"
+                },
+                "message": {
+                    "$ref": "#/definitions/gemini-web-to-api_internal_commons_models.Message"
+                }
+            }
+        },
+        "gemini-web-to-api_internal_modules_providers.AccountConfig": {
+            "type": "object",
+            "properties": {
+                "__Secure-1PSID": {
+                    "type": "string"
+                },
+                "__Secure-1PSIDTS": {
+                    "type": "string"
+                },
+                "added_at": {
+                    "type": "integer"
+                },
+                "error_count": {
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "status": {
+                    "$ref": "#/definitions/gemini-web-to-api_internal_modules_providers.AccountStatus"
+                },
+                "success_count": {
+                    "type": "integer"
+                },
+                "target_ip": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "integer"
+                }
+            }
+        },
+        "gemini-web-to-api_internal_modules_providers.AccountStatus": {
+            "type": "string",
+            "enum": [
+                "Healthy",
+                "Error",
+                "Banned"
+            ],
+            "x-enum-varnames": [
+                "StatusHealthy",
+                "StatusError",
+                "StatusBanned"
+            ]
+        },
+        "internal_modules_admin.AddAccountRequest": {
+            "type": "object",
+            "properties": {
+                "__Secure-1PSID": {
+                    "type": "string"
+                },
+                "__Secure-1PSIDTS": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                }
+            }
+        }
+    },
+    "securityDefinitions": {
+        "BearerAuth": {
+            "description": "Type \"Bearer \u003cyour_admin_api_key\u003e\"",
+            "type": "apiKey",
+            "name": "Authorization",
+            "in": "header"
+        }
+    }
+}

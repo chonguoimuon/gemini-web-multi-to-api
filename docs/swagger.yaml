@@ -1,0 +1,995 @@
+basePath: /
+definitions:
+  gemini-web-to-api_internal_commons_models.FunctionCall:
+    properties:
+      arguments:
+        type: string
+      name:
+        type: string
+    type: object
+  gemini-web-to-api_internal_commons_models.Message:
+    properties:
+      content:
+        type: string
+      role:
+        type: string
+      tool_call_id:
+        type: string
+      tool_calls:
+        items:
+          $ref: '#/definitions/gemini-web-to-api_internal_commons_models.ToolCall'
+        type: array
+    type: object
+  gemini-web-to-api_internal_commons_models.ModelData:
+    properties:
+      created:
+        type: integer
+      created_at:
+        type: integer
+      display_name:
+        type: string
+      id:
+        type: string
+      object:
+        type: string
+      owned_by:
+        type: string
+      type:
+        type: string
+    type: object
+  gemini-web-to-api_internal_commons_models.ModelListResponse:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/gemini-web-to-api_internal_commons_models.ModelData'
+        type: array
+      object:
+        type: string
+    type: object
+  gemini-web-to-api_internal_commons_models.ToolCall:
+    properties:
+      function:
+        $ref: '#/definitions/gemini-web-to-api_internal_commons_models.FunctionCall'
+      id:
+        type: string
+      type:
+        type: string
+    type: object
+  gemini-web-to-api_internal_commons_models.Usage:
+    properties:
+      completion_tokens:
+        type: integer
+      completion_tokens_details: {}
+      input_tokens:
+        type: integer
+      output_tokens:
+        type: integer
+      prompt_tokens:
+        type: integer
+      prompt_tokens_details: {}
+      total_tokens:
+        type: integer
+    type: object
+  gemini-web-to-api_internal_modules_claude_dto.ConfigContent:
+    properties:
+      text:
+        type: string
+      type:
+        description: '"text"'
+        type: string
+    type: object
+  gemini-web-to-api_internal_modules_claude_dto.MessageRequest:
+    properties:
+      max_tokens:
+        type: integer
+      messages:
+        items:
+          $ref: '#/definitions/gemini-web-to-api_internal_commons_models.Message'
+        type: array
+      model:
+        type: string
+      stream:
+        type: boolean
+      system:
+        type: string
+    type: object
+  gemini-web-to-api_internal_modules_claude_dto.MessageResponse:
+    properties:
+      content:
+        items:
+          $ref: '#/definitions/gemini-web-to-api_internal_modules_claude_dto.ConfigContent'
+        type: array
+      id:
+        type: string
+      model:
+        type: string
+      role:
+        description: '"assistant"'
+        type: string
+      stop_reason:
+        type: string
+      type:
+        description: '"message"'
+        type: string
+      usage:
+        $ref: '#/definitions/gemini-web-to-api_internal_commons_models.Usage'
+    type: object
+  gemini-web-to-api_internal_modules_gemini_dto.Candidate:
+    properties:
+      content:
+        $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.Content'
+      finishMessage:
+        type: string
+      finishReason:
+        type: string
+      index:
+        type: integer
+    type: object
+  gemini-web-to-api_internal_modules_gemini_dto.Content:
+    properties:
+      parts:
+        items:
+          $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.Part'
+        type: array
+      role:
+        type: string
+    type: object
+  gemini-web-to-api_internal_modules_gemini_dto.DeepResearchRequest:
+    properties:
+      language:
+        description: Language for the response (optional, e.g. "en", "vi")
+        type: string
+      max_sources:
+        description: MaxSources maximum number of web sources to consult (optional)
+        type: integer
+      model:
+        description: Model to use (optional, defaults to best available)
+        type: string
+      query:
+        description: Query is the research topic or question
+        type: string
+    type: object
+  gemini-web-to-api_internal_modules_gemini_dto.DeepResearchResponse:
+    properties:
+      completed_at:
+        description: CompletedAt timestamp (Unix seconds), 0 if not completed
+        type: integer
+      created_at:
+        description: CreatedAt timestamp (Unix seconds)
+        type: integer
+      duration_ms:
+        description: DurationMs total research duration in milliseconds
+        type: integer
+      error:
+        description: Error message if status is "failed"
+        type: string
+      id:
+        description: ID of this research session
+        type: string
+      model:
+        description: Model used
+        type: string
+      query:
+        description: Query that was researched
+        type: string
+      sources:
+        description: Sources used in research
+        items:
+          $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.ResearchSource'
+        type: array
+      status:
+        description: 'Status: "in_progress", "completed", "failed"'
+        type: string
+      steps:
+        description: Steps of research performed
+        items:
+          $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.ResearchStep'
+        type: array
+      summary:
+        description: Summary is the synthesized research report
+        type: string
+    type: object
+  gemini-web-to-api_internal_modules_gemini_dto.GeminiGenerateRequest:
+    properties:
+      contents:
+        items:
+          $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.Content'
+        type: array
+      generationConfig:
+        $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.GenerationConfig'
+      safety_settings:
+        items:
+          additionalProperties:
+            type: string
+          type: object
+        type: array
+    type: object
+  gemini-web-to-api_internal_modules_gemini_dto.GeminiGenerateResponse:
+    properties:
+      candidates:
+        items:
+          $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.Candidate'
+        type: array
+      usageMetadata:
+        $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.UsageMetadata'
+    type: object
+  gemini-web-to-api_internal_modules_gemini_dto.GeminiModel:
+    properties:
+      description:
+        type: string
+      displayName:
+        type: string
+      name:
+        type: string
+      supportedGenerationMethods:
+        items:
+          type: string
+        type: array
+      version:
+        type: string
+    type: object
+  gemini-web-to-api_internal_modules_gemini_dto.GeminiModelsResponse:
+    properties:
+      models:
+        items:
+          $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.GeminiModel'
+        type: array
+    type: object
+  gemini-web-to-api_internal_modules_gemini_dto.GenerationConfig:
+    properties:
+      maxOutputTokens:
+        type: integer
+      temperature:
+        type: number
+      topK:
+        type: integer
+      topP:
+        type: number
+    type: object
+  gemini-web-to-api_internal_modules_gemini_dto.InlineData:
+    properties:
+      data:
+        type: string
+      mimeType:
+        type: string
+    type: object
+  gemini-web-to-api_internal_modules_gemini_dto.InteractionCreateRequest:
+    properties:
+      agent:
+        description: Agent selects the research mode (e.g. "deep-research-pro-preview-12-2025")
+        type: string
+      background:
+        description: Background if true the task runs asynchronously (always true
+          for this endpoint)
+        type: boolean
+      input:
+        description: Input is the research query / topic
+        type: string
+      language:
+        description: Language for the output report
+        type: string
+      max_sources:
+        description: MaxSources max number of web sources to consult
+        type: integer
+      stream:
+        description: Stream if true the server returns an SSE stream of InteractionResponse
+          events
+        type: boolean
+    type: object
+  gemini-web-to-api_internal_modules_gemini_dto.InteractionOutput:
+    properties:
+      text:
+        description: Text is the research report text
+        type: string
+    type: object
+  gemini-web-to-api_internal_modules_gemini_dto.InteractionResponse:
+    properties:
+      completed_at:
+        description: CompletedAt Unix timestamp (0 if not yet completed)
+        type: integer
+      created_at:
+        description: CreatedAt Unix timestamp
+        type: integer
+      duration_ms:
+        description: DurationMs total research duration in milliseconds
+        type: integer
+      error:
+        description: Error message if status is "failed"
+        type: string
+      id:
+        description: ID unique task identifier
+        type: string
+      outputs:
+        description: Outputs list of output items (non-empty when completed)
+        items:
+          $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.InteractionOutput'
+        type: array
+      query:
+        description: Query that was researched
+        type: string
+      sources:
+        description: Sources consulted during research
+        items:
+          $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.ResearchSource'
+        type: array
+      status:
+        description: 'Status: "in_progress", "completed", "failed"'
+        type: string
+      steps:
+        description: Steps research steps performed
+        items:
+          $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.ResearchStep'
+        type: array
+    type: object
+  gemini-web-to-api_internal_modules_gemini_dto.Part:
+    properties:
+      inlineData:
+        $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.InlineData'
+      text:
+        type: string
+    type: object
+  gemini-web-to-api_internal_modules_gemini_dto.ResearchSource:
+    properties:
+      domain:
+        description: Domain of the source
+        type: string
+      snippet:
+        description: Snippet relevant excerpt from the source
+        type: string
+      title:
+        description: Title of the source page
+        type: string
+      url:
+        description: URL of the source
+        type: string
+    type: object
+  gemini-web-to-api_internal_modules_gemini_dto.ResearchStep:
+    properties:
+      description:
+        description: Description of what this step did
+        type: string
+      query:
+        description: Query used in this step (for search steps)
+        type: string
+      result:
+        description: Result summary of this step
+        type: string
+      step_number:
+        description: StepNumber ordinal step number
+        type: integer
+      type:
+        description: 'Type of step: "search", "read", "synthesize", "outline", "write"'
+        type: string
+    type: object
+  gemini-web-to-api_internal_modules_gemini_dto.UsageMetadata:
+    properties:
+      candidatesTokenCount:
+        type: integer
+      promptTokenCount:
+        type: integer
+      totalTokenCount:
+        type: integer
+    type: object
+  gemini-web-to-api_internal_modules_openai_dto.ChatCompletionRequest:
+    properties:
+      max_tokens:
+        type: integer
+      messages:
+        items:
+          $ref: '#/definitions/gemini-web-to-api_internal_commons_models.Message'
+        type: array
+      model:
+        type: string
+      response_format:
+        $ref: '#/definitions/gemini-web-to-api_internal_modules_openai_dto.ResponseFormat'
+      stream:
+        type: boolean
+      temperature:
+        type: number
+      tools:
+        items: {}
+        type: array
+    type: object
+  gemini-web-to-api_internal_modules_openai_dto.ChatCompletionResponse:
+    properties:
+      choices:
+        items:
+          $ref: '#/definitions/gemini-web-to-api_internal_modules_openai_dto.Choice'
+        type: array
+      created:
+        type: integer
+      id:
+        type: string
+      model:
+        type: string
+      object:
+        type: string
+      system_fingerprint: {}
+      usage:
+        $ref: '#/definitions/gemini-web-to-api_internal_commons_models.Usage'
+    type: object
+  gemini-web-to-api_internal_modules_openai_dto.Choice:
+    properties:
+      finish_reason:
+        type: string
+      index:
+        type: integer
+      message:
+        $ref: '#/definitions/gemini-web-to-api_internal_commons_models.Message'
+    type: object
+  gemini-web-to-api_internal_modules_openai_dto.ResponseFormat:
+    properties:
+      type:
+        type: string
+    type: object
+  gemini-web-to-api_internal_modules_providers.AccountConfig:
+    properties:
+      __Secure-1PSID:
+        type: string
+      __Secure-1PSIDTS:
+        type: string
+      added_at:
+        type: integer
+      error_count:
+        type: integer
+      id:
+        type: string
+      status:
+        $ref: '#/definitions/gemini-web-to-api_internal_modules_providers.AccountStatus'
+      success_count:
+        type: integer
+      target_ip:
+        type: string
+      updated_at:
+        type: integer
+    type: object
+  gemini-web-to-api_internal_modules_providers.AccountStatus:
+    enum:
+    - Healthy
+    - Error
+    - Banned
+    type: string
+    x-enum-varnames:
+    - StatusHealthy
+    - StatusError
+    - StatusBanned
+  internal_modules_admin.AddAccountRequest:
+    properties:
+      __Secure-1PSID:
+        type: string
+      __Secure-1PSIDTS:
+        type: string
+      id:
+        type: string
+    type: object
+  internal_modules_admin.UpdateConfigRequest:
+    properties:
+      auto_delete_chat:
+        type: boolean
+      log_raw_requests:
+        type: boolean
+    type: object
+info:
+  contact: {}
+  description: ✨Reverse-engineered API for Gemini web app. It can be used as a genuine
+    API key from OpenAI, Gemini, and Claude.
+  title: Gemini Web To API
+  version: "1.0"
+paths:
+  /admin/v1/accounts:
+    get:
+      consumes:
+      - application/json
+      description: Returns the status and metrics of all configured Gemini cookie
+        accounts
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/gemini-web-to-api_internal_modules_providers.AccountConfig'
+            type: array
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List All Cookie Accounts
+      tags:
+      - Admin
+    post:
+      consumes:
+      - application/json
+      description: Injects a new __Secure-1PSID and __Secure-1PSIDTS for load balancing
+        and rotation
+      parameters:
+      - description: Account Details
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_modules_admin.AddAccountRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Add or Update a Cookie Account
+      tags:
+      - Admin
+  /admin/v1/accounts/{id}:
+    delete:
+      consumes:
+      - application/json
+      description: Removes an account from the Rotation pool
+      parameters:
+      - description: Account ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete a Cookie Account
+      tags:
+      - Admin
+  /admin/v1/accounts/{id}/test:
+    post:
+      consumes:
+      - application/json
+      description: Forces an immediate check or chat generation on the designated
+        account
+      parameters:
+      - description: Account ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Test Account Rotation
+      tags:
+      - Admin
+  /admin/v1/config:
+    get:
+      consumes:
+      - application/json
+      description: Returns the dynamic runtime configurations
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get Current Configuration
+      tags:
+      - Admin
+    put:
+      consumes:
+      - application/json
+      description: Dynamically updates runtime configs like logging and chat deletion
+      parameters:
+      - description: Configuration Toggles
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_modules_admin.UpdateConfigRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update Configuration
+      tags:
+      - Admin
+  /claude/v1/messages:
+    post:
+      consumes:
+      - application/json
+      description: Sends a message to the Claude model
+      parameters:
+      - description: Message Request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/gemini-web-to-api_internal_modules_claude_dto.MessageRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/gemini-web-to-api_internal_modules_claude_dto.MessageResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Send Message (Claude)
+      tags:
+      - Claude
+  /claude/v1/messages/count_tokens:
+    post:
+      consumes:
+      - application/json
+      description: Estimates the number of tokens for a request
+      parameters:
+      - description: Message Request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/gemini-web-to-api_internal_modules_claude_dto.MessageRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Count Tokens (Claude)
+      tags:
+      - Claude
+  /claude/v1/models:
+    get:
+      consumes:
+      - application/json
+      description: Returns a list of available Claude models
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List Claude Models
+      tags:
+      - Claude
+  /claude/v1/models/{model_id}:
+    get:
+      consumes:
+      - application/json
+      description: Get details of a specific Claude model
+      parameters:
+      - description: Model ID
+        in: path
+        name: model_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get Claude Model
+      tags:
+      - Claude
+  /gemini/v1beta/deepresearch:
+    post:
+      consumes:
+      - application/json
+      description: Performs deep research on a topic using Gemini, searching the web
+        and synthesizing a comprehensive report. This is a blocking call that returns
+        only when research is complete (may take several minutes).
+      parameters:
+      - description: Deep Research Request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.DeepResearchRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.DeepResearchResponse'
+        "400":
+          description: Bad Request – query is missing
+          schema:
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            type: object
+      summary: Deep Research (synchronous)
+      tags:
+      - Gemini
+  /gemini/v1beta/deepresearch/{id}:
+    get:
+      description: Returns the current status and result of a background research
+        task.
+      parameters:
+      - description: Task ID returned by create
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.InteractionResponse'
+        "404":
+          description: Not Found
+          schema:
+            type: object
+      summary: Get Deep Research Interaction status
+      tags:
+      - Gemini
+  /gemini/v1beta/deepresearch/create:
+    post:
+      consumes:
+      - application/json
+      description: Start a deep research task. Set stream=true for realtime SSE progress,
+        or omit for background polling.
+      parameters:
+      - description: Interaction Create Request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.InteractionCreateRequest'
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.InteractionResponse'
+      summary: Create Deep Research Interaction
+      tags:
+      - Gemini
+  /gemini/v1beta/deepresearch/stream:
+    post:
+      consumes:
+      - application/json
+      description: Streams deep research progress in real-time using Server-Sent Events
+        (SSE).
+      parameters:
+      - description: Deep Research Request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.DeepResearchRequest'
+      produces:
+      - text/event-stream
+      responses:
+        "200":
+          description: SSE stream of DeepResearchStreamEvent JSON objects
+          schema:
+            type: string
+        "400":
+          description: Bad Request – query is missing
+          schema:
+            type: object
+      summary: Deep Research (streaming SSE)
+      tags:
+      - Gemini
+  /gemini/v1beta/models:
+    get:
+      consumes:
+      - application/json
+      description: Returns a list of models supported by the Gemini API
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.GeminiModelsResponse'
+      summary: List Gemini Models
+      tags:
+      - Gemini
+  /gemini/v1beta/models/{model}:generateContent:
+    post:
+      consumes:
+      - application/json
+      description: Generates content using the Gemini model
+      parameters:
+      - description: Model ID
+        in: path
+        name: model
+        required: true
+        type: string
+      - description: Generate Request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.GeminiGenerateRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.GeminiGenerateResponse'
+      summary: Generate Content (Gemini)
+      tags:
+      - Gemini
+  /gemini/v1beta/models/{model}:streamGenerateContent:
+    post:
+      consumes:
+      - application/json
+      description: Streams generated content using the Gemini model
+      parameters:
+      - description: Model ID
+        in: path
+        name: model
+        required: true
+        type: string
+      - description: Generate Request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.GeminiGenerateRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Chunked response
+          schema:
+            type: string
+      summary: Stream Generate Content (Gemini)
+      tags:
+      - Gemini
+  /health:
+    get:
+      description: Returns the health status of the service. Used by Docker/K8s/cloud
+        platforms to monitor the service.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Service is healthy
+          schema:
+            properties:
+              service:
+                type: string
+              status:
+                type: string
+            type: object
+      summary: Health check
+      tags:
+      - System
+  /mcp/tools:
+    get:
+      consumes:
+      - application/json
+      description: Returns a list of tools registered in the MCP server. Use this
+        to verify MCP is active.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              type: object
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List MCP Tools
+      tags:
+      - MCP
+  /openai/v1/chat/completions:
+    post:
+      consumes:
+      - application/json
+      description: Generates a completion for the chat message
+      parameters:
+      - description: Chat Completion Request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/gemini-web-to-api_internal_modules_openai_dto.ChatCompletionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/gemini-web-to-api_internal_modules_openai_dto.ChatCompletionResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Chat Completions (OpenAI)
+      tags:
+      - OpenAI
+  /openai/v1/models:
+    get:
+      consumes:
+      - application/json
+      description: Returns a list of models supported by the OpenAI-compatible API
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/gemini-web-to-api_internal_commons_models.ModelListResponse'
+      summary: List OpenAI Models
+      tags:
+      - OpenAI
+securityDefinitions:
+  BearerAuth:
+    description: Type "Bearer <your_admin_api_key>"
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

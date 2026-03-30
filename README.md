@@ -40,8 +40,8 @@ Vì đây là phiên bản mới nhất, bạn cần build image trực tiếp t
 
 ### Bước 1: Clone Repository
 ```bash
-git clone https://github.com/ntthanh2603/gemini-web-to-api.git
-cd gemini-web-to-api
+git clone https://github.com/chonguoimuon/gemini-web-multi-to-api.git
+cd gemini-web-multi-to-api
 ```
 
 ### Bước 2: Thiết lập cấu hình (.env)

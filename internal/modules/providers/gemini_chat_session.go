@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
@@ -29,31 +30,81 @@ func (s *GeminiChatSession) SendMessage(ctx context.Context, message string, opt
 		return nil, fmt.Errorf("client not initialized")
 	}
 
-	// Build conversation context
-	inner := []interface{}{
-		[]interface{}{message},
-		nil,
-		s.buildMetadata(),
+	mInfo, ok := SupportedModels[s.model]
+	if !ok {
+		mInfo = SupportedModels["gemini-2.0-flash"]
 	}
 
-	innerJSON, _ := json.Marshal(inner)
-	outer := []interface{}{nil, string(innerJSON)}
-	outerJSON, _ := json.Marshal(outer)
+	u := uuid.New().String()
+	uUpper := strings.ToUpper(u)
+
+	// Build conversation context (canonical 69-element structure)
+	inner := make([]interface{}, 69)
+	inner[0] = []interface{}{message, 0, nil, nil, nil, nil, 0}
+	inner[1] = []interface{}{"en"}
+	inner[2] = s.buildMetadata()
+	inner[6] = []interface{}{1}
+	inner[7] = 1 // streaming
+	inner[10] = 1
+	inner[11] = 0
+	inner[17] = []interface{}{[]interface{}{0}}
+	inner[18] = 0
+	inner[27] = 1
+	inner[30] = []interface{}{4}
+	inner[41] = []interface{}{1}
+	inner[53] = 0
+	inner[59] = uUpper // UUID must match x-goog-ext-525005358-jspb header
+	inner[61] = []interface{}{}
+	inner[68] = 2
+
+	innerJSON := marshalNoEscape(inner)
+	outer := []interface{}{nil, innerJSON}
+	outerJSON := marshalNoEscape(outer)
 
 	formData := map[string]string{
 		"at":    at,
-		"f.req": string(outerJSON),
+		"f.req": outerJSON,
 	}
 
-	s.worker.SetBusy(true)
-	defer s.worker.SetBusy(false)
+	s.worker.mu.RLock()
+	bl := s.worker.buildLabel
+	sid := s.worker.sessionID
+	s.worker.mu.RUnlock()
+
+	s.worker.muCounter.Lock()
+	s.worker.requestCounter += 100000
+	reqID := s.worker.requestCounter
+	s.worker.muCounter.Unlock()
+
+	// Dynamic headers
+	modelHeaderValue := fmt.Sprintf(`[1,null,null,null,"%s",null,null,0,[4],null,null,%d]`, mInfo.RPCID, mInfo.CapacityTail)
+	headers := map[string]string{
+		"x-goog-ext-525001261-jspb": modelHeaderValue,
+		"x-goog-ext-73010989-jspb":  "[0]",
+		"x-goog-ext-73010990-jspb":  "[0]",
+		"x-goog-ext-525005358-jspb": fmt.Sprintf(`["%s",1]`, uUpper),
+	}
+
+	// Send warmup activity before generate (required to avoid 429 rate limiting)
+	s.worker.sendBardActivity(ctx)
 
 	s.worker.ReqMu.RLock()
-	resp, err := s.worker.httpClient.R().
+	reqBody := s.worker.httpClient.R().
 		SetContext(ctx).
+		SetHeaders(headers).
 		SetFormData(formData).
-		SetQueryParam("at", at).
-		Post(EndpointGenerate)
+		SetQueryParam("rt", "c").
+		SetQueryParam("hl", "en").
+		SetQueryParam("_reqid", fmt.Sprintf("%d", reqID))
+
+	if bl != "" {
+		reqBody.SetQueryParam("bl", bl)
+	}
+	if sid != "" {
+		reqBody.SetQueryParam("f.sid", sid)
+	}
+
+	resp, err := reqBody.Post(EndpointGenerate)
 	s.worker.ReqMu.RUnlock()
 
 	if err != nil {
@@ -64,7 +115,21 @@ func (s *GeminiChatSession) SendMessage(ctx context.Context, message string, opt
 	}
 
 	if resp.StatusCode != 200 {
-		err = fmt.Errorf("chat failed with status: %d", resp.StatusCode)
+		body := resp.String()
+		body500 := body
+		if len(body500) > 500 {
+			body500 = body500[:500]
+		}
+		if resp.StatusCode == 401 || resp.StatusCode == 403 {
+			err = ErrAccessDenied
+		} else {
+			err = fmt.Errorf("chat failed with status: %d", resp.StatusCode)
+		}
+		s.worker.log.Error("Chat request error",
+			zap.Int("status", resp.StatusCode),
+			zap.String("model", s.model),
+			zap.String("response_body", body500),
+		)
 		if s.worker.OnError != nil {
 			s.worker.OnError(s.worker.AccountID, err)
 		}
@@ -151,13 +216,15 @@ func (s *GeminiChatSession) Clear() {
 // buildMetadata builds metadata array for API request
 func (s *GeminiChatSession) buildMetadata() []interface{} {
 	if s.metadata == nil {
-		return []interface{}{nil, nil, nil}
+		return []interface{}{"", "", "", nil, nil, nil, nil, nil, nil, ""}
 	}
 
+	// Full metadata structure: ["cid", "rid", "rcid", null, null, null, null, null, null, ""]
 	return []interface{}{
 		s.metadata.ConversationID,
 		s.metadata.ResponseID,
 		s.metadata.ChoiceID,
+		nil, nil, nil, nil, nil, nil, "",
 	}
 }
 
@@ -179,20 +246,20 @@ func (s *GeminiChatSession) Delete() error {
 	if cid == "" {
 		return nil
 	}
-	
+
 	s.worker.log.Info("🔄 Attempting to delete chat via MyActivity API...")
 
 	// 1. Fetch the 'at' token for MyActivity endpoint
 	respHTML, err := s.worker.httpClient.R().
 		SetContext(context.Background()).
 		Get("https://myactivity.google.com/product/gemini")
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to fetch myactivity page: %v", err)
 	}
 
 	myActivityBody := respHTML.String()
-	
+
 	// Extract the SNlM0e token (at token) for myactivity
 	var myActivityAT string
 	if start := strings.Index(myActivityBody, `SNlM0e":"`); start != -1 {
@@ -213,15 +280,15 @@ func (s *GeminiChatSession) Delete() error {
 	endTime := now + 3600
 
 	innerPayload := fmt.Sprintf(`[[null,null,null,null,null,null,null,["bard"]],null,[[[%d],[%d,999999999]]]]`, startTime, endTime)
-	
+
 	reqArray := []interface{}{
 		[]interface{}{
 			[]interface{}{"TmdDAd", innerPayload, nil, "generic"},
 		},
 	}
-	
+
 	reqJSON, _ := json.Marshal(reqArray)
-	
+
 	formData := map[string]string{
 		"at":    myActivityAT,
 		"f.req": string(reqJSON),
@@ -244,7 +311,7 @@ func (s *GeminiChatSession) Delete() error {
 		s.worker.log.Info("🎉 Delete Chat SUCCESSFUL via MyActivity TmdDAd payload!")
 		return nil
 	}
-	
+
 	s.worker.log.Debug("Failed MyActivity payload", zap.Int("status", resp.StatusCode), zap.String("body", resp.String()))
 	return fmt.Errorf("failed to delete via myactivity, status: %d", resp.StatusCode)
 }

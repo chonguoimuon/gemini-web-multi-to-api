@@ -37,7 +37,9 @@ type AccountConfig struct {
 	UpdatedAt     int64         `json:"updated_at"`
 }
 
-// Client acts as an AccountManager and a LoadBalancer across multiple Gemini Web sessions
+// Client acts as an AccountManager and a LoadBalancer across multiple Gemini Web sessions.
+// It provides centralized worker acquisition with queue support to ensure each account
+// only processes one request at a time across ALL services (OpenAI, Claude, Gemini, MCP).
 type Client struct {
 	cfg         *configs.Config
 	log         *zap.Logger
@@ -46,6 +48,7 @@ type Client struct {
 	workers      []*Worker
 	accountsMap  map[string]*AccountConfig
 	mu           sync.RWMutex
+	cond         *sync.Cond // signals when a worker becomes idle
 	currentIndex int
 }
 
@@ -60,6 +63,7 @@ func NewClient(cfg *configs.Config, log *zap.Logger) *Client {
 		workers:     []*Worker{},
 		accountsMap: make(map[string]*AccountConfig),
 	}
+	c.cond = sync.NewCond(&c.mu)
 
 	return c
 }
@@ -81,6 +85,10 @@ func (c *Client) Init(ctx context.Context) error {
 		worker.AccountID = acc.ID
 		worker.OnSuccess = c.ReportSuccess
 		worker.OnError = c.ReportError
+		// When a worker finishes, wake up all waiters in the queue
+		worker.OnRelease = func() {
+			c.cond.Broadcast()
+		}
 
 		go func(w *Worker, act *AccountConfig) {
 			err := w.Init(context.Background())
@@ -94,6 +102,7 @@ func (c *Client) Init(ctx context.Context) error {
 			}
 			act.UpdatedAt = time.Now().Unix()
 			c.mu.Unlock()
+			c.cond.Broadcast() // Wake up waiters — a new worker may be available
 			c.SaveAccounts()
 		}(worker, acc)
 
@@ -121,8 +130,9 @@ func (c *Client) masterSync() {
 				// Sync the worker's healthy state to the dashboard!
 				if !w.IsHealthy() && act.Status != StatusBanned {
 					act.Status = StatusError
-				} else if w.IsHealthy() && act.Status == StatusError {
+				} else if w.IsHealthy() && act.Status != StatusHealthy {
 					act.Status = StatusHealthy
+					c.cond.Broadcast() // Wake up waiting requests
 				}
 			}
 		}
@@ -176,6 +186,9 @@ func (c *Client) AddAccount(id, psid, psidts string) {
 
 	worker := NewWorker(c.cfg, c.log, psid, psidts)
 	worker.AccountID = id
+	worker.OnRelease = func() {
+		c.cond.Broadcast()
+	}
 	c.workers = append(c.workers, worker)
 	c.mu.Unlock()
 
@@ -188,6 +201,7 @@ func (c *Client) AddAccount(id, psid, psidts string) {
 			acc.Status = StatusHealthy
 		}
 		c.mu.Unlock()
+		c.cond.Broadcast()
 		c.SaveAccounts()
 	}()
 	c.SaveAccounts()
@@ -244,7 +258,10 @@ func (c *Client) TestAccount(id string) error {
 			acc.Status = StatusError
 			acc.ErrorCount++
 		} else {
-			acc.Status = StatusHealthy
+			if acc.Status != StatusHealthy {
+				acc.Status = StatusHealthy
+				c.cond.Broadcast() // Wake up waiting requests
+			}
 		}
 		acc.UpdatedAt = time.Now().Unix()
 	}
@@ -254,10 +271,10 @@ func (c *Client) TestAccount(id string) error {
 	return err
 }
 
-func (c *Client) getNextWorker() (*Worker, *AccountConfig, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
+// findIdleWorkerLocked scans workers round-robin for an idle+healthy+non-banned worker.
+// Caller MUST hold c.mu (Lock, not RLock).
+// Returns (worker, account, error). If no idle worker found, returns (nil, nil, nil).
+func (c *Client) findIdleWorkerLocked() (*Worker, *AccountConfig, error) {
 	if len(c.workers) == 0 {
 		return nil, nil, fmt.Errorf("no accounts configured")
 	}
@@ -274,13 +291,100 @@ func (c *Client) getNextWorker() (*Worker, *AccountConfig, error) {
 
 		if w.IsHealthy() && !w.IsBusy() && acc.Status != StatusBanned {
 			c.currentIndex = (idx + 1) % len(c.workers)
+			w.SetBusy(true) // Atomically mark as busy before releasing lock
 			return w, acc, nil
 		}
 	}
 
-	return nil, nil, fmt.Errorf("no healthy accounts available")
+	return nil, nil, nil // No error, just none available right now
 }
 
+// AcquireWorker blocks until an idle+healthy worker is available or ctx expires.
+// Returns the worker, account config, and a release function.
+// Caller MUST call the release function when done with the worker.
+// This is the SINGLE centralized entry point for all services to get a worker.
+func (c *Client) AcquireWorker(ctx context.Context) (*Worker, *AccountConfig, func(), error) {
+	c.mu.Lock()
+
+	if len(c.workers) == 0 {
+		c.mu.Unlock()
+		return nil, nil, nil, fmt.Errorf("no accounts configured")
+	}
+
+	for {
+		// Check context before each attempt
+		if err := ctx.Err(); err != nil {
+			c.mu.Unlock()
+			return nil, nil, nil, err
+		}
+
+		// Check if anyone can possibly service this (at least one non-banned worker)
+		eligibleFound := false
+		for _, w := range c.workers {
+			if a, ok := c.accountsMap[w.AccountID]; ok && a.Status != StatusBanned {
+				eligibleFound = true
+				break
+			}
+		}
+		if !eligibleFound {
+			c.mu.Unlock()
+			return nil, nil, nil, ErrAllAccountsExhausted
+		}
+
+		worker, acc, err := c.findIdleWorkerLocked()
+		if err != nil {
+			c.mu.Unlock()
+			return nil, nil, nil, err
+		}
+		if worker != nil {
+			// Ensure session is fresh before every request
+			if err := worker.RefreshSession(); err != nil {
+				c.log.Warn("⚠️ Failed to refresh session before request", zap.String("account_id", acc.ID), zap.Error(err))
+				// Continue to find another worker or retry since this one's session initiation failed
+				worker.SetBusy(false)
+				continue
+			}
+
+			c.mu.Unlock()
+
+			// Build release function — must be called exactly once by the caller
+			released := false
+			releaseFunc := func() {
+				if released {
+					return // Idempotent
+				}
+				released = true
+				worker.SetBusy(false)
+				c.cond.Broadcast() // Wake up other waiters
+			}
+
+			c.log.Info("🔓 Worker acquired",
+				zap.String("account_id", acc.ID),
+			)
+			return worker, acc, releaseFunc, nil
+		}
+
+		// All workers busy — wait in queue
+		c.log.Debug("⏳ All accounts busy, waiting in queue...")
+
+		// Spawn goroutine to wake us if context is cancelled
+		ctxDone := make(chan struct{})
+		go func() {
+			select {
+			case <-ctx.Done():
+				c.cond.Broadcast() // Wake up the Wait() below
+			case <-ctxDone:
+				// Normal path — we got a worker or gave up
+			}
+		}()
+
+		c.cond.Wait() // Releases c.mu, sleeps, re-acquires c.mu on wake
+		close(ctxDone) // Clean up context watcher goroutine
+	}
+}
+
+// GenerateContent acquires an idle worker, generates content, and releases the worker.
+// This is used by Claude, Gemini native, MCP, and image generation — all stateless single-shot calls.
 func (c *Client) GenerateContent(ctx context.Context, prompt string, options ...GenerateOption) (*Response, error) {
 	c.mu.RLock()
 	maxAttempts := len(c.workers)
@@ -292,7 +396,8 @@ func (c *Client) GenerateContent(ctx context.Context, prompt string, options ...
 
 	var lastErr error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		worker, acc, err := c.getNextWorker()
+		// Acquire an idle worker (blocks if all busy)
+		worker, acc, release, err := c.AcquireWorker(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -302,21 +407,22 @@ func (c *Client) GenerateContent(ctx context.Context, prompt string, options ...
 		c.log.Info("📡 SENDING TO GEMINI...", zap.String("account_id", acc.ID), zap.Int("attempt", attempt+1))
 		resp, err := worker.GenerateContent(workerCtx, prompt, options...)
 		cancel()
+		release() // Always release after each attempt
 
 		if err == nil {
 			c.log.Info("✅ GEMINI SUCCESS", zap.String("account_id", acc.ID))
 			return resp, nil
 		}
 
-		// Handle fatal account errors: Access Denied, 401, 403
-		isFatal := errors.Is(err, ErrAccessDenied) || strings.Contains(err.Error(), "status 403") || strings.Contains(err.Error(), "status 401") || strings.Contains(err.Error(), "blocked")
-		
+		// Handle fatal account errors: 401, 403
+		isFatal := strings.Contains(err.Error(), "status 403") || strings.Contains(err.Error(), "status 401") || strings.Contains(err.Error(), "blocked")
+
 		if isFatal {
 			c.log.Error("❌ FATAL: Account Access Denied / Banned", zap.String("account_id", acc.ID), zap.Error(err))
 			if attempt < maxAttempts-1 {
 				c.log.Info("🔄 FALLBACK: Selecting next healthy account after cooldown...", zap.Int("next_attempt", attempt+2))
-				
-				// Added Cooldown: Wait a bit before hitting the next account to avoid IP-based rate limiting
+
+				// Cooldown: Wait a bit before hitting the next account to avoid IP-based rate limiting
 				select {
 				case <-time.After(2 * time.Second):
 					continue // Try next worker
@@ -325,6 +431,12 @@ func (c *Client) GenerateContent(ctx context.Context, prompt string, options ...
 				}
 			}
 			return nil, err
+		}
+
+		// Prevent cascading bans on prompt block or safety filter (don't rotate accounts if the PROMPT is the issue)
+		if errors.Is(err, ErrAccessDenied) || errors.Is(err, ErrSafetyBlock) {
+			c.log.Warn("⚠️ GEMINI [Safety/Access] ERROR: Prompt block or safety filter triggered. NOT falling back to protect pool pool.", zap.String("account_id", acc.ID), zap.Error(err))
+			return nil, fmt.Errorf("gemini rejected request (safety block or constraint): %w", err)
 		}
 
 		// Handle timeout errors (retryable)
@@ -353,35 +465,35 @@ func (c *Client) GetWorkerCount() int {
 	return len(c.workers)
 }
 
-func (c *Client) StartChat(options ...ChatOption) ChatSession {
-	worker, _, err := c.getNextWorker()
-	if err != nil || worker == nil {
-		// Fallback to searching all workers if round-robin didn't find one (all busy?)
-		c.mu.RLock()
-		for _, w := range c.workers {
-			if w.IsHealthy() && !w.IsBusy() {
-				worker = w
-				break
-			}
-		}
-		
-		// Ultimate fallback: if everything is busy, pick the first healthy one anyway
-		// or returning nil is also fine - the caller handles it
-		if worker == nil && len(c.workers) > 0 {
-			for _, w := range c.workers {
-				if w.IsHealthy() {
-					worker = w
-					break
-				}
-			}
-		}
-		c.mu.RUnlock()
+// StartChatWithContext acquires an idle worker, creates a ChatSession on it,
+// and returns the session + a release function. Caller MUST call release() when done.
+// This replaces the old StartChat() for callers that need proper queue integration.
+func (c *Client) StartChatWithContext(ctx context.Context, options ...ChatOption) (ChatSession, func(), error) {
+	worker, acc, release, err := c.AcquireWorker(ctx)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	if worker != nil {
-		return worker.StartChat(options...)
+	c.log.Info("💬 StartChat: Worker acquired for chat session", zap.String("account_id", acc.ID))
+	session := worker.StartChat(options...)
+	return session, release, nil
+}
+
+// StartChat is a convenience wrapper that acquires a worker with a 30s timeout.
+// DEPRECATED: prefer StartChatWithContext for proper queue integration.
+func (c *Client) StartChat(options ...ChatOption) ChatSession {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	session, _, err := c.StartChatWithContext(ctx, options...)
+	if err != nil {
+		c.log.Warn("StartChat failed to acquire worker", zap.Error(err))
+		return nil
 	}
-	return nil
+	// Note: release is NOT called here — the session worker stays busy until
+	// Worker.GenerateContent or SendMessage internally manages it.
+	// This is intentionally a legacy path.
+	return session
 }
 
 func (c *Client) Close() error {
@@ -441,7 +553,10 @@ func (c *Client) ReportSuccess(id string) {
 
 	if acc, ok := c.accountsMap[id]; ok {
 		acc.SuccessCount++
-		acc.Status = StatusHealthy
+		if acc.Status != StatusHealthy {
+			acc.Status = StatusHealthy
+			c.cond.Broadcast() // Wake up waiting requests
+		}
 		acc.UpdatedAt = time.Now().Unix()
 		go c.SaveAccounts()
 	}
@@ -453,7 +568,7 @@ func (c *Client) ReportError(id string, err error) {
 
 	if acc, ok := c.accountsMap[id]; ok {
 		acc.ErrorCount++
-		if err != nil && (errors.Is(err, ErrAccessDenied) || strings.Contains(err.Error(), "status 401") || strings.Contains(err.Error(), "status 403")) {
+		if err != nil && (strings.Contains(err.Error(), "status 401") || strings.Contains(err.Error(), "status 403")) {
 			acc.Status = StatusBanned
 		} else {
 			acc.Status = StatusError

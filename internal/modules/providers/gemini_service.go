@@ -1,14 +1,13 @@
 package providers
 
 import (
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,13 +18,31 @@ import (
 
 	"gemini-web-to-api/internal/commons/configs"
 
+	"github.com/google/uuid"
 	"github.com/imroc/req/v3"
 	"go.uber.org/zap"
 )
 
 var (
 	ErrAccessDenied = errors.New("access denied: account may be blocked or unauthenticated")
+	ErrSafetyBlock  = errors.New("gemini safety filters are blocking this specific request")
 )
+
+// GeminiModelInfo contains technical data for the StreamGenerate request
+type GeminiModelInfo struct {
+	RPCID        string
+	CapacityTail int
+}
+
+// SupportedModels defines the mapping from public IDs (like gemini-2.0-flash) to internal Google hex IDs
+var SupportedModels = map[string]GeminiModelInfo{
+	"gemini-2.0-flash":          {"fbb127bbb056c959", 1},
+	"gemini-2.0-flash-thinking": {"5bf011840784117a", 1},
+	"gemini-2.0-pro-exp":        {"9d8ca3786ebdfbea", 1},
+	"gemini-1.5-flash":          {"fbb127bbb056c959", 1},
+	"gemini-1.5-pro":           {"9d8ca3786ebdfbea", 1},
+	"gemini-pro":                {"fbb127bbb056c959", 1}, // Default to Flash for compatibility
+}
 
 type Worker struct {
 	AccountID  string
@@ -47,8 +64,15 @@ type Worker struct {
 	isBusy bool
 	busyMu sync.Mutex
 
+	// New fields for latest RPC structure
+	buildLabel     string
+	sessionID      string
+	requestCounter int
+	muCounter      sync.Mutex
+
 	OnSuccess func(accountID string)
 	OnError   func(accountID string, err error)
+	OnRelease func() // Called when worker transitions from busy→idle, to wake up queue waiters
 }
 
 type CookieStore struct {
@@ -70,6 +94,7 @@ func NewWorker(cfg *configs.Config, log *zap.Logger, psid, psidTS string) *Worke
 	}
 
 	client := req.NewClient().
+		ImpersonateChrome().
 		SetTimeout(10 * time.Minute).
 		SetCommonHeaders(DefaultHeaders)
 
@@ -77,6 +102,9 @@ func NewWorker(cfg *configs.Config, log *zap.Logger, psid, psidTS string) *Worke
 	if refreshIntervalMinutes <= 0 {
 		refreshIntervalMinutes = defaultRefreshIntervalMinutes
 	}
+
+	// Create a new PRNG for this worker
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	return &Worker{
 		httpClient:      client,
@@ -87,6 +115,7 @@ func NewWorker(cfg *configs.Config, log *zap.Logger, psid, psidTS string) *Worke
 		maxRetries:      cfg.Gemini.MaxRetries,
 		log:             log,
 		allCookies:      make(map[string]*http.Cookie),
+		requestCounter:  rng.Intn(9000) + 1000, // Start with 4 digits like Python
 	}
 }
 
@@ -125,20 +154,16 @@ func (c *Worker) Init(ctx context.Context) error {
 	c.updateCookies(nil)
 
 	// Get SNlM0e token
-	err := c.refreshSessionToken()
-	if err != nil {
+	if err := c.RefreshSession(); err != nil {
 		c.log.Debug("Initial session token fetch failed, attempting cookie rotation", zap.Error(err))
-		// Try to rotate cookies and retry
 		if rotErr := c.RotateCookies(); rotErr == nil {
 			c.log.Debug("Cookie rotation succeeded, retrying session token fetch")
-			err = c.refreshSessionToken()
+			if err := c.RefreshSession(); err != nil {
+				return err
+			}
 		} else {
-			c.log.Debug("Cookie rotation failed", zap.Error(rotErr))
+			return err
 		}
-	}
-
-	if err != nil {
-		return err
 	}
 
 	// Save the valid cookies to cache immediately after successful init
@@ -155,11 +180,11 @@ func (c *Worker) Init(ctx context.Context) error {
 }
 
 func (c *Worker) TestConnection() error {
-	err := c.refreshSessionToken()
+	err := c.RefreshSession()
 	if err != nil {
 		c.log.Debug("TestConnection: session token fetch failed, attempting cookie rotation", zap.Error(err))
 		if rotErr := c.RotateCookies(); rotErr == nil {
-			err = c.refreshSessionToken()
+			err = c.RefreshSession()
 		}
 	}
 
@@ -170,11 +195,13 @@ func (c *Worker) TestConnection() error {
 	return err
 }
 
-func (c *Worker) refreshSessionToken() error {
+// RefreshSession performs a full session initialization with Google
+func (c *Worker) RefreshSession() error {
 	// 1. Initial hit to google.com to get extra cookies (NID, etc)
 	tmpClient := req.NewClient().
+		ImpersonateChrome().
 		SetTimeout(30 * time.Second).
-		SetUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+		SetCookieJar(nil)
 	
 	resp1, err := tmpClient.R().Get("https://www.google.com/")
 	extraCookies := ""
@@ -195,28 +222,20 @@ func (c *Worker) refreshSessionToken() error {
 		extraCookies, c.cookies.Secure1PSID, c.cookies.Secure1PSIDTS)
 
 	commonHeaders := map[string]string{
-		"Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-		"Accept-Language":           "en-US,en;q=0.9",
 		"Cache-Control":             "max-age=0",
 		"Origin":                    "https://gemini.google.com",
-		"Sec-Ch-Ua":                 `"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"`,
-		"Sec-Ch-Ua-Mobile":          "?0",
-		"Sec-Ch-Ua-Platform":        `"Windows"`,
 		"Sec-Fetch-Dest":            "document",
 		"Sec-Fetch-Mode":            "navigate",
 		"Sec-Fetch-Site":            "none",
 		"Sec-Fetch-User":            "?1",
 		"Upgrade-Insecure-Requests": "1",
 		"X-Same-Domain":             "1",
-		"User-Agent":                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 	}
 
-	hClient := &http.Client{
-		Timeout: 30 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return nil // follow redirects
-		},
-	}
+	hClient := req.NewClient().
+		ImpersonateChrome().
+		SetTimeout(30 * time.Second).
+		SetCookieJar(nil)
 
 	// Helper to merge cookies into a map to avoid duplicates
 	mergeCookies := func(baseStr string, newCks []*http.Cookie) string {
@@ -241,48 +260,32 @@ func (c *Worker) refreshSessionToken() error {
 		return strings.Join(res, "; ")
 	}
 
-	req1, _ := http.NewRequest("GET", "https://gemini.google.com/?hl=en", nil)
+	req1 := hClient.R()
 	for k, v := range commonHeaders {
-		req1.Header.Set(k, v)
+		req1.SetHeader(k, v)
 	}
-	req1.Header.Set("Cookie", cookieStr)
-	resp1_direct, _ := hClient.Do(req1)
-	if resp1_direct != nil {
+	req1.SetHeader("Cookie", cookieStr)
+	resp1_direct, _ := req1.Get("https://gemini.google.com/?hl=en")
+	if resp1_direct != nil && resp1_direct.IsSuccess() {
 		cookieStr = mergeCookies(cookieStr, resp1_direct.Cookies())
 		c.updateCookies(resp1_direct.Cookies())
-		resp1_direct.Body.Close()
 	}
 
 	// 2. The main INIT hit
-	req2, _ := http.NewRequest("GET", EndpointInit+"?hl=en", nil)
+	req2 := hClient.R()
 	for k, v := range commonHeaders {
-		req2.Header.Set(k, v)
+		req2.SetHeader(k, v)
 	}
-	req2.Header.Set("Sec-Fetch-Site", "same-origin")
-	req2.Header.Set("Cookie", cookieStr)
-	req2.Header.Set("Referer", "https://gemini.google.com/")
-	req2.Header.Set("Accept-Encoding", "gzip, deflate, br")
+	req2.SetHeader("Sec-Fetch-Site", "same-origin")
+	req2.SetHeader("Cookie", cookieStr)
+	req2.SetHeader("Referer", "https://gemini.google.com/")
 
-	resp, err := hClient.Do(req2)
+	resp, err := req2.Get(EndpointInit + "?hl=en")
 	if err != nil {
 		return fmt.Errorf("failed to reach gemini app: %w", err)
 	}
-	defer resp.Body.Close()
 
-	// Dump for debugging if it fails
-	// reqDump, _ := httputil.DumpRequestOut(req2, false)
-	// respDump, _ := httputil.DumpResponse(resp, false)
-	
-	var bodyReader io.ReadCloser = resp.Body
-	if strings.Contains(resp.Header.Get("Content-Encoding"), "gzip") {
-		gz, err := gzip.NewReader(resp.Body)
-		if err == nil {
-			bodyReader = gz
-			defer gz.Close()
-		}
-	}
-
-	bodyBytes, _ := io.ReadAll(bodyReader)
+	bodyBytes := resp.Bytes()
 	body := string(bodyBytes)
 
 
@@ -292,21 +295,32 @@ func (c *Worker) refreshSessionToken() error {
 		reFallback := regexp.MustCompile(`\["SNlM0e","([^"]+)"\]`)
 		matches = reFallback.FindStringSubmatch(body)
 		if len(matches) < 2 {
-
-
 			errMsg := "authentication failed: SNlM0e not found"
 			if strings.Contains(body, "Sign in") || strings.Contains(body, "login") {
 				errMsg = "authentication failed: cookies invalid. Please provide __Secure-1PSIDTS in addition to __Secure-1PSID"
 			}
-
-			// Log as Info to avoid stack trace for expected auth failures
 			c.log.Info(errMsg)
 			return fmt.Errorf("%s", errMsg)
 		}
 	}
 
+	// Extract build label (try multiple patterns - critical for avoiding bot detection)
+	bl := extractBuildLabel(body)
+
+	// Extract session ID (try multiple patterns)
+	sid := extractSessionID(body)
+
+	c.log.Debug("Session params extracted",
+		zap.String("build_label", bl),
+		zap.String("session_id", sid),
+		zap.Bool("has_bl", bl != ""),
+		zap.Bool("has_sid", sid != ""),
+	)
+
 	c.mu.Lock()
 	c.at = matches[1]
+	c.buildLabel = bl
+	c.sessionID = sid
 	c.healthy = true
 	c.mu.Unlock()
 
@@ -327,6 +341,20 @@ func (c *Worker) refreshModels(body string) {
 	matches := modelIDRegex.FindAllString(body, -1)
 	
 	uniqueIDs := make(map[string]bool)
+	
+	// First, add all manually supported models
+	for id := range SupportedModels {
+		if !uniqueIDs[id] {
+			uniqueIDs[id] = true
+			newModels = append(newModels, ModelInfo{
+				ID:       id,
+				Created:  now,
+				OwnedBy:  "google",
+				Provider: "gemini",
+			})
+		}
+	}
+
 	for _, id := range matches {
 		// Clean up potential trailing backslashes or quotes if they were caught
 		id = strings.Trim(id, `\"' `)
@@ -379,7 +407,7 @@ func (c *Worker) startAutoRefresh() {
 				c.log.Warn("Cookie rotation failed, falling back to session token refresh", zap.Error(rotateErr))
 				
 				c.ReqMu.Lock()
-				sessionErr := c.refreshSessionToken()
+				sessionErr := c.RefreshSession()
 				c.ReqMu.Unlock()
 				
 				if sessionErr != nil {
@@ -409,7 +437,7 @@ func (c *Worker) startAutoRefresh() {
 			} else {
 				// Rotation succeeded - also refresh session token to keep SNlM0e/at up to date
 				c.ReqMu.Lock()
-				sessionErr := c.refreshSessionToken()
+				sessionErr := c.RefreshSession()
 				c.ReqMu.Unlock()
 				
 				if sessionErr != nil {
@@ -463,21 +491,24 @@ func (c *Worker) RotateCookies() error {
 
 	// Payload must be exactly this string
 	strBody := `[000,"-0000000000000000000"]`
-	req, _ := http.NewRequest("POST", EndpointRotateCookies, strings.NewReader(strBody))
-	
-	req.Header.Set("Content-Type", "application/json")
-	// Google often blocks requests with default Go-http-client User-Agent
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-	req.Header.Set("Cookie", cookieStr)
 
 	c.log.Debug("Sending rotation request", zap.String("url", EndpointRotateCookies))
-	hClient := &http.Client{Timeout: 5 * time.Second}
-	resp, err := hClient.Do(req)
+	
+	hClient := req.NewClient().
+		ImpersonateChrome().
+		SetTimeout(5 * time.Second).
+		SetCookieJar(nil)
+		
+	resp, err := hClient.R().
+		SetHeader("Content-Type", "application/json").
+		SetHeader("Cookie", cookieStr).
+		SetBodyString(strBody).
+		Post(EndpointRotateCookies)
+
 	if err != nil {
 		c.log.Info("Rotation request failed (network/auth issue)", zap.String("error", err.Error()))
 		return fmt.Errorf("failed to call rotation endpoint: %w", err)
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		c.log.Info("Rotation failed (likely invalid __Secure-1PSID)", zap.Int("status", resp.StatusCode))
@@ -558,22 +589,76 @@ func (c *Worker) GenerateContent(ctx context.Context, prompt string, options ...
 		return nil, errors.New("client not initialized")
 	}
 
-	// Build request payload
-	// The structure confirmed to work for model selection is [ [prompt], nil, nil, model ]
-	inner := []interface{}{
-		[]interface{}{prompt},
-		nil,
-		nil,
-		config.Model,
+	targetModel := config.Model
+	mInfo, ok := SupportedModels[targetModel]
+	if !ok {
+		// If it's a raw hex ID found via regex, we might not have it in SupportedModels mapping.
+		// Use it directly as RPCID if it looks like one, otherwise default to Flash.
+		if len(targetModel) > 10 && !strings.Contains(targetModel, "-") {
+			mInfo = GeminiModelInfo{RPCID: targetModel, CapacityTail: 1}
+		} else {
+			mInfo = SupportedModels["gemini-2.0-flash"]
+		}
 	}
 
-	innerJSON, _ := json.Marshal(inner)
-	outer := []interface{}{nil, string(innerJSON)}
-	outerJSON, _ := json.Marshal(outer)
+	u := uuid.New().String()
+	uUpper := strings.ToUpper(u)
+
+	// Build request payload with canonical 69-element structure (as per Python reference)
+	inner := make([]interface{}, 69)
+
+	// Index 0: Message content [prompt, role_type, null, file_data, null, null, 0]
+	inner[0] = []interface{}{
+		prompt,
+		0,
+		nil,
+		nil,
+		nil,
+		nil,
+		0,
+	}
+	inner[1] = []interface{}{"en"}  // language
+	inner[2] = []interface{}{"", "", "", nil, nil, nil, nil, nil, nil, ""} // metadata (DEFAULT_METADATA)
+	inner[6] = []interface{}{1}
+	inner[7] = 1  // STREAMING_FLAG_INDEX
+	inner[10] = 1
+	inner[11] = 0
+	inner[17] = []interface{}{[]interface{}{0}}
+	inner[18] = 0
+	inner[27] = 1
+	inner[30] = []interface{}{4}
+	inner[41] = []interface{}{1}
+	inner[53] = 0
+	inner[59] = uUpper // UUID must match x-goog-ext-525005358-jspb header
+	inner[61] = []interface{}{}
+	inner[68] = 2
+
+	innerJSON := marshalNoEscape(inner)
+	outer := []interface{}{nil, innerJSON}
+	outerJSON := marshalNoEscape(outer)
 
 	formData := map[string]string{
 		"at":    at,
-		"f.req": string(outerJSON),
+		"f.req": outerJSON,
+	}
+
+	c.mu.RLock()
+	bl := c.buildLabel
+	sid := c.sessionID
+	c.mu.RUnlock()
+
+	c.muCounter.Lock()
+	c.requestCounter += 100000
+	reqID := c.requestCounter
+	c.muCounter.Unlock()
+
+	// Build headers
+	modelHeaderValue := fmt.Sprintf(`[1,null,null,null,"%s",null,null,0,[4],null,null,%d]`, mInfo.RPCID, mInfo.CapacityTail)
+	headers := map[string]string{
+		"x-goog-ext-525001261-jspb": modelHeaderValue,
+		"x-goog-ext-73010989-jspb":  "[0]",
+		"x-goog-ext-73010990-jspb":  "[0]",
+		"x-goog-ext-525005358-jspb": fmt.Sprintf(`["%s",1]`, uUpper),
 	}
 
 	maxAttempts := c.maxRetries
@@ -583,16 +668,31 @@ func (c *Worker) GenerateContent(ctx context.Context, prompt string, options ...
 
 	totalStart := time.Now()
 	httpStart := time.Now()
-	
-	c.SetBusy(true)
-	defer c.SetBusy(false)
+
+	// Note: Busy state is managed by Client.AcquireWorker/release — NOT here.
+	// This allows the caller (Client) to hold the worker across multiple operations
+	// (e.g., chat session + tool correction retries) without premature release.
+
+	// Send warmup activity to avoid rate limiting (matches Python _send_bard_activity)
+	c.sendBardActivity(ctx)
 
 	c.ReqMu.RLock()
-	resp, err := c.httpClient.R().
+	req := c.httpClient.R().
 		SetContext(ctx).
+		SetHeaders(headers).
 		SetFormData(formData).
-		SetQueryParam("at", at).
-		Post(EndpointGenerate)
+		SetQueryParam("rt", "c").
+		SetQueryParam("hl", "en").
+		SetQueryParam("_reqid", fmt.Sprintf("%d", reqID))
+	
+	if bl != "" {
+		req.SetQueryParam("bl", bl)
+	}
+	if sid != "" {
+		req.SetQueryParam("f.sid", sid)
+	}
+
+	resp, err := req.Post(EndpointGenerate)
 	c.ReqMu.RUnlock()
 
 	httpDuration := time.Since(httpStart)
@@ -608,9 +708,20 @@ func (c *Worker) GenerateContent(ctx context.Context, prompt string, options ...
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		err = fmt.Errorf("generate failed with status: %d", resp.StatusCode)
+		body := resp.String()
+		body500 := body
+		if len(body500) > 500 {
+			body500 = body500[:500]
+		}
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			err = ErrAccessDenied
+		} else {
+			err = fmt.Errorf("generate failed with status: %d", resp.StatusCode)
+		}
 		c.log.Error("Server returned error status",
 			zap.Int("status", resp.StatusCode),
+			zap.String("response_body", body500),
+			zap.String("error_msg", err.Error()),
 		)
 		if c.OnError != nil {
 			c.OnError(c.AccountID, err)
@@ -678,8 +789,14 @@ func (c *Worker) Close() error {
 
 func (c *Worker) SetBusy(busy bool) {
 	c.busyMu.Lock()
-	defer c.busyMu.Unlock()
+	wasBusy := c.isBusy
 	c.isBusy = busy
+	c.busyMu.Unlock()
+
+	// If transitioning from busy→idle, notify the queue so waiting requests can proceed
+	if wasBusy && !busy && c.OnRelease != nil {
+		c.OnRelease()
+	}
 }
 
 func (c *Worker) IsBusy() bool {
@@ -720,8 +837,9 @@ func (c *Worker) ListModelsIDs() []string {
 	return ids
 }
 
-// parseResponse parses Gemini's response format
 func (c *Worker) parseResponse(text string) (*Response, error) {
+	var finalResp *Response
+
 	lines := strings.Split(text, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -762,6 +880,24 @@ func (c *Worker) parseResponse(text string) (*Response, error) {
 							if ok && len(contentParts) > 0 {
 								resText, ok := contentParts[0].(string)
 								if ok {
+									// Detect new Google safety filters that return a text message instead of a hard error
+									if strings.Contains(resText, "safety filters are kicking in") ||
+										strings.Contains(resText, "I can't help with that") ||
+										strings.Contains(resText, "cannot fulfill this request") {
+										return nil, ErrSafetyBlock
+									}
+
+									if finalResp == nil {
+										finalResp = &Response{
+											Metadata: make(map[string]any),
+										}
+									}
+
+									// Gemini sends cumulative text in each chunk. Update if not empty.
+									if resText != "" {
+										finalResp.Text = resText
+									}
+
 									// Extract conversation metadata if available
 									var cid, rid, rcid string
 									if len(firstCandidate) > 0 {
@@ -784,49 +920,35 @@ func (c *Worker) parseResponse(text string) (*Response, error) {
 										}
 									}
 
-									// DEBUG LOG TO SEE PAYLOAD STRUCTURE
-									c.log.Debug("Gemini Response Payload Indices",
-										zap.Any("payload_1", func() interface{} { 
-											if len(payload) > 1 { return payload[1] } 
-											return nil 
-										}()),
-										zap.Any("payload_2", func() interface{} { 
-											if len(payload) > 2 { return payload[2] } 
-											return nil 
-										}()),
-										zap.String("full_payload_str", payloadStr),
-									)
+									if cid != "" {
+										finalResp.Metadata["cid"] = cid
+									}
+									if rid != "" {
+										finalResp.Metadata["rid"] = rid
+									}
+									if rcid != "" {
+										finalResp.Metadata["rcid"] = rcid
+									}
 
 									// Extract generated image URLs using regex pattern
 									pattern := `https://lh3\.googleusercontent\.com/[a-zA-Z0-9\-_]{50,}(?:=[a-zA-Z0-9\-_]+|/fife/|/image/)[a-zA-Z0-9\-_]*`
 									re := regexp.MustCompile(pattern)
 									matches := re.FindAllString(payloadStr, -1)
-									
-									var extractedImages []Image
+
 									uniqueMap := make(map[string]bool)
-									
+									// preserve existing images
+									for _, img := range finalResp.Images {
+										uniqueMap[img.URL] = true
+									}
+
 									for _, url := range matches {
 										if !uniqueMap[url] {
 											uniqueMap[url] = true
-											extractedImages = append(extractedImages, Image{
+											finalResp.Images = append(finalResp.Images, Image{
 												URL: url,
 											})
 										}
 									}
-
-									if len(extractedImages) > 0 {
-										c.log.Info("🖼️ Successfully extracted generated images from Gemini", zap.Int("count", len(extractedImages)))
-									}
-
-									return &Response{
-										Text: resText,
-										Images: extractedImages,
-										Metadata: map[string]any{
-											"cid":  cid,
-											"rid":  rid,
-											"rcid": rcid,
-										},
-									}, nil
 								}
 							}
 						}
@@ -834,6 +956,13 @@ func (c *Worker) parseResponse(text string) (*Response, error) {
 				}
 			}
 		}
+	}
+
+	if finalResp != nil {
+		if len(finalResp.Images) > 0 {
+			c.log.Info("🖼️ Successfully extracted generated images from Gemini", zap.Int("count", len(finalResp.Images)))
+		}
+		return finalResp, nil
 	}
 
 	sample := text
@@ -974,6 +1103,59 @@ func (c *Worker) ClearCookieCache() error {
 	return nil
 }
 
+// sendBardActivity sends a required warmup request to Google's batchexecute endpoint
+// before StreamGenerate calls. Without this, Google rate-limits requests (429) as bot traffic.
+// This matches the _send_bard_activity() method in the Python Gemini-API reference client.
+func (c *Worker) sendBardActivity(ctx context.Context) {
+	c.mu.RLock()
+	at := c.at
+	bl := c.buildLabel
+	sid := c.sessionID
+	lang := "en"
+	c.mu.RUnlock()
+
+	if at == "" {
+		return
+	}
+
+	c.muCounter.Lock()
+	c.requestCounter += 100000
+	reqID := c.requestCounter
+	c.muCounter.Unlock()
+
+	// Payload: ESY5D with bard activity settings
+	rpcPayload := `[[["bard_activity_enabled"]]]`
+	f := [][]interface{}{{"ESY5D", rpcPayload, nil, "generic"}}
+	fJSON := marshalNoEscape([]interface{}{f})
+
+	params := map[string]string{
+		"rpcids":      "ESY5D",
+		"source-path": "/app",
+		"hl":          lang,
+		"_reqid":      fmt.Sprintf("%d", reqID),
+		"rt":          "c",
+	}
+	if bl != "" {
+		params["bl"] = bl
+	}
+	if sid != "" {
+		params["f.sid"] = sid
+	}
+
+	c.ReqMu.RLock()
+	_, _ = c.httpClient.R().
+		SetContext(ctx).
+		SetQueryParams(params).
+		SetFormData(map[string]string{
+			"at":    at,
+			"f.req": string(fJSON),
+		}).
+		SetHeader("x-goog-ext-525001261-jspb", "[1,null,null,null,null,null,null,null,[4]]").
+		SetHeader("x-goog-ext-73010989-jspb", "[0]").
+		Post(EndpointBatchExec)
+	c.ReqMu.RUnlock()
+}
+
 const (
 EndpointGoogle        = "https://www.google.com"
 EndpointInit          = "https://gemini.google.com/app"
@@ -982,10 +1164,53 @@ EndpointRotateCookies = "https://accounts.google.com/RotateCookies"
 EndpointBatchExec     = "https://gemini.google.com/_/BardChatUi/data/batchexecute"
 )
 
+// extractBuildLabel extracts the build label from Gemini's HTML.
+// Google stores this as internal key "cfb2h" (not the literal "bl").
+// The value looks like "boq_assistant-bard-web-server_20260329.14_p3".
+func extractBuildLabel(body string) string {
+	// Primary: internal key "cfb2h" used by WIZ_global_data
+	if m := regexp.MustCompile(`"cfb2h"\s*:\s*"([^"]+)"`).FindStringSubmatch(body); len(m) > 1 {
+		return m[1]
+	}
+	// Fallback: try the literal "bl" key (some page variants)
+	if m := regexp.MustCompile(`"bl"\s*:\s*"(boq[^"]+)"`).FindStringSubmatch(body); len(m) > 1 {
+		return m[1]
+	}
+	// Fallback: any boq_assistant pattern
+	if m := regexp.MustCompile(`(boq_assistant-bard-web-server_[0-9a-z._-]+)`).FindStringSubmatch(body); len(m) > 1 {
+		return m[1]
+	}
+	return ""
+}
+
+// extractSessionID extracts the session ID from Gemini's HTML.
+// Google stores this as internal key "FdrFJe" (not the literal "f.sid").
+// The value is a large integer (possibly negative).
+func extractSessionID(body string) string {
+	// Primary: internal key "FdrFJe" used by WIZ_global_data
+	if m := regexp.MustCompile(`"FdrFJe"\s*:\s*"(-?[0-9]+)"`).FindStringSubmatch(body); len(m) > 1 {
+		return m[1]
+	}
+	// Fallback: try literal "f.sid" (some page variants)
+	if m := regexp.MustCompile(`"f\.sid"\s*:\s*"(-?[0-9]+)"`).FindStringSubmatch(body); len(m) > 1 {
+		return m[1]
+	}
+	return ""
+}
+
 var DefaultHeaders = map[string]string{
 "Content-Type":  "application/x-www-form-urlencoded;charset=utf-8",
 "Origin":        "https://gemini.google.com",
 "Referer":       "https://gemini.google.com/",
-"User-Agent":    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 "X-Same-Domain": "1",
+}
+
+func marshalNoEscape(v interface{}) string {
+	var buf strings.Builder
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return "{}"
+	}
+	return strings.TrimSuffix(buf.String(), "\n")
 }

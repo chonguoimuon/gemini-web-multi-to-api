@@ -26,8 +26,11 @@ func (s *GeminiChatSession) SendMessage(ctx context.Context, message string, opt
 	at := s.worker.at
 	s.worker.mu.RUnlock()
 
-	if at == "" {
+	if at == "" && !strings.HasPrefix(s.worker.AccountID, "guest-") {
 		return nil, fmt.Errorf("client not initialized")
+	}
+	if at == "" {
+		at = "null" // Fallback for guest mode
 	}
 
 	mInfo, ok := SupportedModels[s.model]
@@ -86,7 +89,9 @@ func (s *GeminiChatSession) SendMessage(ctx context.Context, message string, opt
 	}
 
 	// Send warmup activity before generate (required to avoid 429 rate limiting)
-	s.worker.sendBardActivity(ctx)
+	if err := s.worker.sendBardActivity(ctx); err != nil {
+		s.worker.log.Warn("Warmup activity failed (silent rejection risk)", zap.Error(err))
+	}
 
 	s.worker.ReqMu.RLock()
 	reqBody := s.worker.httpClient.R().
@@ -120,11 +125,16 @@ func (s *GeminiChatSession) SendMessage(ctx context.Context, message string, opt
 		if len(body500) > 500 {
 			body500 = body500[:500]
 		}
+		
+		isHTML := strings.Contains(body, "<!DOCTYPE html") || strings.Contains(body, "<html>")
 		if resp.StatusCode == 401 || resp.StatusCode == 403 {
 			err = ErrAccessDenied
+		} else if resp.StatusCode == 429 && isHTML {
+			err = ErrBotBlocked
 		} else {
 			err = fmt.Errorf("chat failed with status: %d", resp.StatusCode)
 		}
+		
 		s.worker.log.Error("Chat request error",
 			zap.Int("status", resp.StatusCode),
 			zap.String("model", s.model),

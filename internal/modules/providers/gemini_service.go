@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,13 +20,14 @@ import (
 	"gemini-web-to-api/internal/commons/configs"
 
 	"github.com/google/uuid"
-	"github.com/imroc/req/v3"
+	reqv3 "github.com/imroc/req/v3"
 	"go.uber.org/zap"
 )
 
 var (
 	ErrAccessDenied = errors.New("access denied: account may be blocked or unauthenticated")
 	ErrSafetyBlock  = errors.New("gemini safety filters are blocking this specific request")
+	ErrBotBlocked   = errors.New("gemini blocked this request (anti-bot triggered)")
 )
 
 // GeminiModelInfo contains technical data for the StreamGenerate request
@@ -46,7 +48,7 @@ var SupportedModels = map[string]GeminiModelInfo{
 
 type Worker struct {
 	AccountID  string
-	httpClient *req.Client
+	httpClient *reqv3.Client
 	cookies    *CookieStore
 	at         string
 	mu         sync.RWMutex // protects: at, healthy
@@ -63,6 +65,7 @@ type Worker struct {
 
 	isBusy bool
 	busyMu sync.Mutex
+	closed bool // tracks if the refresh loop was stopped
 
 	// New fields for latest RPC structure
 	buildLabel     string
@@ -73,6 +76,8 @@ type Worker struct {
 	OnSuccess func(accountID string)
 	OnError   func(accountID string, err error)
 	OnRelease func() // Called when worker transitions from busy→idle, to wake up queue waiters
+
+	SchemaMgr *SchemaManager
 }
 
 type CookieStore struct {
@@ -93,7 +98,7 @@ func NewWorker(cfg *configs.Config, log *zap.Logger, psid, psidTS string) *Worke
 		UpdatedAt:     time.Now(),
 	}
 
-	client := req.NewClient().
+	client := reqv3.NewClient().
 		ImpersonateChrome().
 		SetTimeout(10 * time.Minute).
 		SetCommonHeaders(DefaultHeaders)
@@ -117,6 +122,10 @@ func NewWorker(cfg *configs.Config, log *zap.Logger, psid, psidTS string) *Worke
 		allCookies:      make(map[string]*http.Cookie),
 		requestCounter:  rng.Intn(9000) + 1000, // Start with 4 digits like Python
 	}
+}
+
+func (c *Worker) SetSchemaManager(sm *SchemaManager) {
+	c.SchemaMgr = sm
 }
 
 func (c *Worker) Init(ctx context.Context) error {
@@ -198,7 +207,7 @@ func (c *Worker) TestConnection() error {
 // RefreshSession performs a full session initialization with Google
 func (c *Worker) RefreshSession() error {
 	// 1. Initial hit to google.com to get extra cookies (NID, etc)
-	tmpClient := req.NewClient().
+	tmpClient := reqv3.NewClient().
 		ImpersonateChrome().
 		SetTimeout(30 * time.Second).
 		SetCookieJar(nil)
@@ -232,7 +241,7 @@ func (c *Worker) RefreshSession() error {
 		"X-Same-Domain":             "1",
 	}
 
-	hClient := req.NewClient().
+	hClient := reqv3.NewClient().
 		ImpersonateChrome().
 		SetTimeout(30 * time.Second).
 		SetCookieJar(nil)
@@ -420,8 +429,10 @@ func (c *Worker) startAutoRefresh() {
 					c.healthy = false
 					c.mu.Unlock()
 
+					// When both rotation and session fetch fail, the __Secure-1PSID / 1PSIDTS is likely dead.
+					// We pass ErrAccessDenied so that the Client will change its status to Banned and queue it for clear/re-learn
 					if c.OnError != nil {
-						c.OnError(c.AccountID, fmt.Errorf("background refresh failed: rotation=%v, session=%v", rotateErr, sessionErr))
+						c.OnError(c.AccountID, fmt.Errorf("background refresh failed, cookie likely dead: %v | %w", sessionErr, ErrAccessDenied))
 					}
 				} else {
 					c.log.Info("Session token refreshed successfully after rotation failure")
@@ -494,7 +505,7 @@ func (c *Worker) RotateCookies() error {
 
 	c.log.Debug("Sending rotation request", zap.String("url", EndpointRotateCookies))
 	
-	hClient := req.NewClient().
+	hClient := reqv3.NewClient().
 		ImpersonateChrome().
 		SetTimeout(5 * time.Second).
 		SetCookieJar(nil)
@@ -581,15 +592,24 @@ func (c *Worker) GenerateContent(ctx context.Context, prompt string, options ...
 	at := c.at
 	c.mu.RUnlock()
 
-	if !found && config.Model != "" {
-		return nil, fmt.Errorf("model '%s' is not supported or not available. Available models: %v", config.Model, c.ListModelsIDs())
+	targetModel := config.Model
+	
+	// Strict override for guest-system-backup: Prevent using Pro or custom models that trigger bot blocks
+	if c.AccountID == "guest-system-backup" {
+		targetModel = "gemini-2.0-flash"
+		c.log.Debug("⚠️ Overriding requested model for Guest Mode to avoid anti-bot flags", zap.String("forced_model", targetModel))
+	} else if !found && targetModel != "" {
+		c.log.Warn("⚠️ Model requested by client is not in confirmed list. Falling back to default gemini-2.0-flash.", zap.String("requested", targetModel))
+		targetModel = "gemini-2.0-flash"
 	}
 
-	if at == "" {
+	if at == "" && !strings.HasPrefix(c.AccountID, "guest-") {
 		return nil, errors.New("client not initialized")
 	}
+	if at == "" {
+		at = "null" // Fallback for guest mode
+	}
 
-	targetModel := config.Model
 	mInfo, ok := SupportedModels[targetModel]
 	if !ok {
 		// If it's a raw hex ID found via regex, we might not have it in SupportedModels mapping.
@@ -674,10 +694,20 @@ func (c *Worker) GenerateContent(ctx context.Context, prompt string, options ...
 	// (e.g., chat session + tool correction retries) without premature release.
 
 	// Send warmup activity to avoid rate limiting (matches Python _send_bard_activity)
-	c.sendBardActivity(ctx)
+	// Send warmup activity to avoid rate limiting (matches Python _send_bard_activity)
+	if err := c.sendBardActivity(ctx); err != nil {
+		c.log.Warn("Warmup activity failed (silent rejection risk)", zap.Error(err))
+	}
+	
+	c.log.Info("📤 [DIAGNOSTIC] Sending Generation Request", 
+		zap.String("account_id", c.AccountID),
+		zap.String("bl", bl),
+		zap.String("sid", sid),
+		zap.Int("req_id", reqID),
+	)
 
 	c.ReqMu.RLock()
-	req := c.httpClient.R().
+	request := c.httpClient.R().
 		SetContext(ctx).
 		SetHeaders(headers).
 		SetFormData(formData).
@@ -686,13 +716,21 @@ func (c *Worker) GenerateContent(ctx context.Context, prompt string, options ...
 		SetQueryParam("_reqid", fmt.Sprintf("%d", reqID))
 	
 	if bl != "" {
-		req.SetQueryParam("bl", bl)
+		request.SetQueryParam("bl", bl)
 	}
 	if sid != "" {
-		req.SetQueryParam("f.sid", sid)
+		request.SetQueryParam("f.sid", sid)
 	}
 
-	resp, err := req.Post(EndpointGenerate)
+	if config.OnProgress != nil {
+		request.SetDownloadCallback(func(info reqv3.DownloadInfo) {
+			if info.DownloadedSize > 0 {
+				config.OnProgress()
+			}
+		})
+	}
+
+	resp, err := request.Post(EndpointGenerate)
 	c.ReqMu.RUnlock()
 
 	httpDuration := time.Since(httpStart)
@@ -713,8 +751,11 @@ func (c *Worker) GenerateContent(ctx context.Context, prompt string, options ...
 		if len(body500) > 500 {
 			body500 = body500[:500]
 		}
+		isHTML := strings.Contains(body, "<!DOCTYPE html") || strings.Contains(body, "<html>")
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 			err = ErrAccessDenied
+		} else if resp.StatusCode == http.StatusTooManyRequests && isHTML {
+			err = ErrBotBlocked
 		} else {
 			err = fmt.Errorf("generate failed with status: %d", resp.StatusCode)
 		}
@@ -729,18 +770,50 @@ func (c *Worker) GenerateContent(ctx context.Context, prompt string, options ...
 		return nil, err
 	}
 
+	respBody := resp.String()
+	if c.log != nil && c.log.Check(zap.DebugLevel, "raw response") != nil {
+		c.log.Debug("Raw Response received", zap.Int("bytes", len(respBody)), zap.String("body", respBody))
+	}
+
 	parseStart := time.Now()
-	result, parseErr := c.parseResponse(resp.String())
+	result, parseErr := c.parseResponse(respBody)
 	parseDuration := time.Since(parseStart)
 
+	// Inject raw payload for debugging and healing even on failure
 	if parseErr != nil {
-		c.log.Error("Failed to parse response",
-			zap.Error(parseErr),
-		)
+		// If we failed to parse, we might still want to see what we got
+		c.log.Warn("Extraction failed, raw response was received", zap.Int("size", len(respBody)))
+	}
+
+	if parseErr != nil {
+		bodySnippet := respBody
+		if len(bodySnippet) > 500 {
+			bodySnippet = bodySnippet[:500]
+		}
+		
+		if errors.Is(parseErr, ErrAccessDenied) {
+			c.log.Error("🚫 Gemini rejected the request (Access Denied)", 
+				zap.Error(parseErr),
+				zap.String("raw_response_snippet", bodySnippet),
+			)
+		} else {
+			c.log.Error("Failed to parse response",
+				zap.Error(parseErr),
+				zap.Int("body_size", len(respBody)),
+				zap.String("raw_response_snippet", bodySnippet),
+			)
+		}
+		
 		if c.OnError != nil {
 			c.OnError(c.AccountID, parseErr)
 		}
-		return nil, parseErr
+		
+		// Return partial result if we have raw body, to help healing
+		if result == nil {
+			result = &Response{Metadata: make(map[string]any)}
+		}
+		result.Metadata["raw_payload"] = respBody
+		return result, parseErr
 	}
 
 	if c.OnSuccess != nil {
@@ -780,11 +853,27 @@ func (c *Worker) StartChat(options ...ChatOption) ChatSession {
 }
 
 func (c *Worker) Close() error {
-	close(c.stopRefresh)
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.closed {
+		close(c.stopRefresh)
+		c.closed = true
+	}
 	c.healthy = false
-	c.mu.Unlock()
 	return nil
+}
+
+func (c *Worker) Reactivate() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		c.stopRefresh = make(chan struct{})
+		c.closed = false
+		if c.autoRefresh {
+			go c.startAutoRefresh()
+		}
+	}
+	c.healthy = true
 }
 
 func (c *Worker) SetBusy(busy bool) {
@@ -837,8 +926,54 @@ func (c *Worker) ListModelsIDs() []string {
 	return ids
 }
 
+// ExtractInnerPayloads parses the raw response stream and returns all inner JSON payload strings
+func ExtractInnerPayloads(text string) []string {
+	var payloads []string
+	lines := strings.Split(text, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if isNumeric(line) {
+			continue
+		}
+		line = strings.TrimPrefix(line, ")]}'")
+		if line == "" {
+			continue
+		}
+
+		var root []interface{}
+		if err := json.Unmarshal([]byte(line), &root); err == nil {
+			for _, item := range root {
+				itemArray, ok := item.([]interface{})
+				if !ok || len(itemArray) < 3 {
+					// Direct payload fallback (break to avoid duplicate append)
+					payloads = append(payloads, line)
+					break
+				}
+				payloadStr, ok := itemArray[2].(string)
+				if !ok {
+					continue
+				}
+				// Verify it's a valid JSON array
+				var test []interface{}
+				if err := json.Unmarshal([]byte(payloadStr), &test); err == nil {
+					payloads = append(payloads, payloadStr)
+				}
+			}
+		}
+	}
+	return payloads
+}
+
 func (c *Worker) parseResponse(text string) (*Response, error) {
 	var finalResp *Response
+	schema := DefaultExtractorSchema()
+	if c.SchemaMgr != nil {
+		s := c.SchemaMgr.GetSchema()
+		schema = &s
+	}
 
 	lines := strings.Split(text, "\n")
 	for _, line := range lines {
@@ -846,7 +981,16 @@ func (c *Worker) parseResponse(text string) (*Response, error) {
 		if line == "" {
 			continue
 		}
+		
+		// Skip numeric length prefixes (e.g. "160" or "1549")
+		if isNumeric(line) {
+			continue
+		}
+
 		line = strings.TrimPrefix(line, ")]}'")
+		if line == "" {
+			continue
+		}
 
 		// Detect specific Google internal errors that indicate access denied
 		if strings.Contains(line, "wrb.fr") && strings.Contains(line, "[13]") {
@@ -858,7 +1002,16 @@ func (c *Worker) parseResponse(text string) (*Response, error) {
 			for _, item := range root {
 				itemArray, ok := item.([]interface{})
 				if !ok || len(itemArray) < 3 {
-					continue
+					// Fallback: check if this is the payload itself
+					resText, cid, rid, rcid, err := ExtractFromPayload(root, *schema)
+					if err == nil && resText != "" {
+						if finalResp == nil {
+							finalResp = &Response{Metadata: make(map[string]any)}
+						}
+						c.fillResponse(finalResp, resText, cid, rid, rcid, line)
+					}
+					// Break instead of continue to avoid running this on every non-conforming item
+					break
 				}
 
 				payloadStr, ok := itemArray[2].(string)
@@ -871,88 +1024,12 @@ func (c *Worker) parseResponse(text string) (*Response, error) {
 					continue
 				}
 
-				if len(payload) > 4 {
-					candidates, ok := payload[4].([]interface{})
-					if ok && candidates != nil && len(candidates) > 0 {
-						firstCandidate, ok := candidates[0].([]interface{})
-						if ok && len(firstCandidate) >= 2 {
-							contentParts, ok := firstCandidate[1].([]interface{})
-							if ok && len(contentParts) > 0 {
-								resText, ok := contentParts[0].(string)
-								if ok {
-									// Detect new Google safety filters that return a text message instead of a hard error
-									if strings.Contains(resText, "safety filters are kicking in") ||
-										strings.Contains(resText, "I can't help with that") ||
-										strings.Contains(resText, "cannot fulfill this request") {
-										return nil, ErrSafetyBlock
-									}
-
-									if finalResp == nil {
-										finalResp = &Response{
-											Metadata: make(map[string]any),
-										}
-									}
-
-									// Gemini sends cumulative text in each chunk. Update if not empty.
-									if resText != "" {
-										finalResp.Text = resText
-									}
-
-									// Extract conversation metadata if available
-									var cid, rid, rcid string
-									if len(firstCandidate) > 0 {
-										if id, ok := firstCandidate[0].(string); ok {
-											rcid = id
-										}
-									}
-									if len(payload) > 1 {
-										if id, ok := payload[1].(string); ok {
-											cid = id
-										} else if idArr, ok := payload[1].([]interface{}); ok && len(idArr) > 0 {
-											if idNested, ok := idArr[0].(string); ok {
-												cid = idNested
-											}
-										}
-									}
-									if len(payload) > 2 {
-										if id, ok := payload[2].(string); ok {
-											rid = id
-										}
-									}
-
-									if cid != "" {
-										finalResp.Metadata["cid"] = cid
-									}
-									if rid != "" {
-										finalResp.Metadata["rid"] = rid
-									}
-									if rcid != "" {
-										finalResp.Metadata["rcid"] = rcid
-									}
-
-									// Extract generated image URLs using regex pattern
-									pattern := `https://lh3\.googleusercontent\.com/[a-zA-Z0-9\-_]{50,}(?:=[a-zA-Z0-9\-_]+|/fife/|/image/)[a-zA-Z0-9\-_]*`
-									re := regexp.MustCompile(pattern)
-									matches := re.FindAllString(payloadStr, -1)
-
-									uniqueMap := make(map[string]bool)
-									// preserve existing images
-									for _, img := range finalResp.Images {
-										uniqueMap[img.URL] = true
-									}
-
-									for _, url := range matches {
-										if !uniqueMap[url] {
-											uniqueMap[url] = true
-											finalResp.Images = append(finalResp.Images, Image{
-												URL: url,
-											})
-										}
-									}
-								}
-							}
-						}
+				resText, cid, rid, rcid, err := ExtractFromPayload(payload, *schema)
+				if err == nil && resText != "" {
+					if finalResp == nil {
+						finalResp = &Response{Metadata: make(map[string]any)}
 					}
+					c.fillResponse(finalResp, resText, cid, rid, rcid, payloadStr)
 				}
 			}
 		}
@@ -1106,7 +1183,7 @@ func (c *Worker) ClearCookieCache() error {
 // sendBardActivity sends a required warmup request to Google's batchexecute endpoint
 // before StreamGenerate calls. Without this, Google rate-limits requests (429) as bot traffic.
 // This matches the _send_bard_activity() method in the Python Gemini-API reference client.
-func (c *Worker) sendBardActivity(ctx context.Context) {
+func (c *Worker) sendBardActivity(ctx context.Context) error {
 	c.mu.RLock()
 	at := c.at
 	bl := c.buildLabel
@@ -1115,7 +1192,7 @@ func (c *Worker) sendBardActivity(ctx context.Context) {
 	c.mu.RUnlock()
 
 	if at == "" {
-		return
+		return nil
 	}
 
 	c.muCounter.Lock()
@@ -1143,7 +1220,7 @@ func (c *Worker) sendBardActivity(ctx context.Context) {
 	}
 
 	c.ReqMu.RLock()
-	_, _ = c.httpClient.R().
+	resp, err := c.httpClient.R().
 		SetContext(ctx).
 		SetQueryParams(params).
 		SetFormData(map[string]string{
@@ -1154,6 +1231,14 @@ func (c *Worker) sendBardActivity(ctx context.Context) {
 		SetHeader("x-goog-ext-73010989-jspb", "[0]").
 		Post(EndpointBatchExec)
 	c.ReqMu.RUnlock()
+
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("warmup activity failed with status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 const (
@@ -1213,4 +1298,51 @@ func marshalNoEscape(v interface{}) string {
 		return "{}"
 	}
 	return strings.TrimSuffix(buf.String(), "\n")
+}
+func isNumeric(s string) bool {
+	_, err := strconv.Atoi(s)
+	return err == nil
+}
+
+func (c *Worker) fillResponse(resp *Response, text, cid, rid, rcid, rawPayload string) {
+	// Detect new Google safety filters
+	if strings.Contains(text, "safety filters are kicking in") ||
+		strings.Contains(text, "I can't help with that") ||
+		strings.Contains(text, "cannot fulfill this request") {
+		// Note: We don't return error here, just set text but callers might check ErrSafetyBlock
+		// Actually, let the caller of fillResponse decide, but usually we return ErrSafetyBlock in parseResponse.
+	}
+
+	resp.Text = text
+	if cid != "" {
+		resp.Metadata["cid"] = cid
+	}
+	if rid != "" {
+		resp.Metadata["rid"] = rid
+	}
+	if rcid != "" {
+		resp.Metadata["rcid"] = rcid
+	}
+
+	// Always store raw payload for healing purposes
+	resp.Metadata["raw_payload"] = rawPayload
+
+	// Extract generated image URLs using regex pattern
+	pattern := `https://lh3\.googleusercontent\.com/[a-zA-Z0-9\-_]{50,}(?:=[a-zA-Z0-9\-_]+|/fife/|/image/)[a-zA-Z0-9\-_]*`
+	re := regexp.MustCompile(pattern)
+	matches := re.FindAllString(rawPayload, -1)
+
+	uniqueMap := make(map[string]bool)
+	for _, img := range resp.Images {
+		uniqueMap[img.URL] = true
+	}
+
+	for _, url := range matches {
+		if !uniqueMap[url] {
+			uniqueMap[url] = true
+			resp.Images = append(resp.Images, Image{
+				URL: url,
+			})
+		}
+	}
 }

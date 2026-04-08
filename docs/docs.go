@@ -39,7 +39,7 @@ const docTemplate = `{
                         "schema": {
                             "type": "array",
                             "items": {
-                                "$ref": "#/definitions/gemini-web-to-api_internal_modules_providers.AccountConfig"
+                                "$ref": "#/definitions/providers.AccountConfig"
                             }
                         }
                     },
@@ -76,7 +76,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_modules_admin.AddAccountRequest"
+                            "$ref": "#/definitions/admin.AddAccountRequest"
                         }
                     }
                 ],
@@ -96,6 +96,21 @@ const docTemplate = `{
                         }
                     }
                 }
+            }
+        },
+        "/admin/v1/accounts/clear-all-bots": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Sweeps all accounts and performs bot clearance on those with errors",
+                "tags": [
+                    "Admin"
+                ],
+                "summary": "Clear All Bots",
+                "responses": {}
             }
         },
         "/admin/v1/accounts/{id}": {
@@ -141,6 +156,30 @@ const docTemplate = `{
                         }
                     }
                 }
+            }
+        },
+        "/admin/v1/accounts/{id}/clear-bot": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Manually triggers the Rod browser to perform \"hãy trả lời ok\" interaction",
+                "tags": [
+                    "Admin"
+                ],
+                "summary": "Clear Bot for specific account",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Account ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {}
             }
         },
         "/admin/v1/accounts/{id}/test": {
@@ -210,8 +249,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/admin.ConfigResponse"
                         }
                     }
                 }
@@ -240,7 +278,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_modules_admin.UpdateConfigRequest"
+                            "$ref": "#/definitions/admin.UpdateConfigRequest"
                         }
                     }
                 ],
@@ -248,11 +286,156 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/admin.UpdateConfigResponse"
                         }
                     }
                 }
+            }
+        },
+        "/admin/v1/guest/discover": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Manually triggers the discovery service to find and learn new AI guest platforms",
+                "tags": [
+                    "Guest"
+                ],
+                "summary": "Trigger Guest Discovery",
+                "responses": {}
+            }
+        },
+        "/admin/v1/guest/platforms": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns the list of discovered and valid guest chat platforms",
+                "tags": [
+                    "Guest"
+                ],
+                "summary": "List Guest Platforms",
+                "responses": {}
+            }
+        },
+        "/admin/v1/guest/platforms/{id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Removes a discovered guest platform from the system",
+                "tags": [
+                    "Guest"
+                ],
+                "summary": "Delete Guest Platform",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Platform ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {}
+            }
+        },
+        "/admin/v1/guest/platforms/{id}/test": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Send 'hello' to a guest platform to verify it's working",
+                "tags": [
+                    "Guest"
+                ],
+                "summary": "Test Guest Platform",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Platform ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {}
+            }
+        },
+        "/admin/v1/guest/relearn": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Resets learned structure for guest platforms and initiates re-learning",
+                "tags": [
+                    "Guest"
+                ],
+                "summary": "Re-learn Guest Platforms",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Specific Platform ID (optional, omit for ALL)",
+                        "name": "id",
+                        "in": "query"
+                    }
+                ],
+                "responses": {}
+            }
+        },
+        "/admin/v1/schema/reset": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Resets the GJSON extraction paths to default and triggers healing",
+                "tags": [
+                    "Admin"
+                ],
+                "summary": "Reset Schema Extractor",
+                "responses": {}
+            }
+        },
+        "/admin/v1/schema/retry": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Manually triggers the self-healing process to find new GJSON paths",
+                "tags": [
+                    "Admin"
+                ],
+                "summary": "Retry Healing",
+                "responses": {}
+            }
+        },
+        "/admin/v1/schema/status": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns the current GJSON schema and healing status",
+                "tags": [
+                    "Admin"
+                ],
+                "summary": "Get Schema Status",
+                "responses": {}
             }
         },
         "/claude/v1/messages": {
@@ -275,7 +458,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/gemini-web-to-api_internal_modules_claude_dto.MessageRequest"
+                            "$ref": "#/definitions/dto.MessageRequest"
                         }
                     }
                 ],
@@ -283,7 +466,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/gemini-web-to-api_internal_modules_claude_dto.MessageResponse"
+                            "$ref": "#/definitions/dto.MessageResponse"
                         }
                     },
                     "400": {
@@ -323,7 +506,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/gemini-web-to-api_internal_modules_claude_dto.MessageRequest"
+                            "$ref": "#/definitions/dto.MessageRequest"
                         }
                     }
                 ],
@@ -415,7 +598,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.DeepResearchRequest"
+                            "$ref": "#/definitions/dto.DeepResearchRequest"
                         }
                     }
                 ],
@@ -423,7 +606,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.DeepResearchResponse"
+                            "$ref": "#/definitions/dto.DeepResearchResponse"
                         }
                     },
                     "400": {
@@ -461,7 +644,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.InteractionCreateRequest"
+                            "$ref": "#/definitions/dto.InteractionCreateRequest"
                         }
                     }
                 ],
@@ -469,7 +652,7 @@ const docTemplate = `{
                     "202": {
                         "description": "Accepted",
                         "schema": {
-                            "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.InteractionResponse"
+                            "$ref": "#/definitions/dto.InteractionResponse"
                         }
                     }
                 }
@@ -495,7 +678,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.DeepResearchRequest"
+                            "$ref": "#/definitions/dto.DeepResearchRequest"
                         }
                     }
                 ],
@@ -538,7 +721,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.InteractionResponse"
+                            "$ref": "#/definitions/dto.InteractionResponse"
                         }
                     },
                     "404": {
@@ -567,7 +750,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.GeminiModelsResponse"
+                            "$ref": "#/definitions/dto.GeminiModelsResponse"
                         }
                     }
                 }
@@ -600,7 +783,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.GeminiGenerateRequest"
+                            "$ref": "#/definitions/dto.GeminiGenerateRequest"
                         }
                     }
                 ],
@@ -608,7 +791,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.GeminiGenerateResponse"
+                            "$ref": "#/definitions/dto.GeminiGenerateResponse"
                         }
                     }
                 }
@@ -641,7 +824,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.GeminiGenerateRequest"
+                            "$ref": "#/definitions/dto.GeminiGenerateRequest"
                         }
                     }
                 ],
@@ -734,7 +917,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/gemini-web-to-api_internal_modules_openai_dto.ChatCompletionRequest"
+                            "$ref": "#/definitions/dto.ChatCompletionRequest"
                         }
                     }
                 ],
@@ -742,7 +925,55 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/gemini-web-to-api_internal_modules_openai_dto.ChatCompletionResponse"
+                            "$ref": "#/definitions/dto.ChatCompletionResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/openai/v1/images/generations": {
+            "post": {
+                "description": "Creates an image given a prompt",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "OpenAI"
+                ],
+                "summary": "Image Generations (OpenAI)",
+                "parameters": [
+                    {
+                        "description": "Image Generation Request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/dto.ImageGenerationRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/dto.ImageGenerationResponse"
                         }
                     },
                     "400": {
@@ -779,7 +1010,41 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/gemini-web-to-api_internal_commons_models.ModelListResponse"
+                            "$ref": "#/definitions/models.ModelListResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/openai/v1/responses": {
+            "post": {
+                "description": "Alias for chat completions for specific external integration requirements",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "OpenAI"
+                ],
+                "summary": "Chat Responses (OpenAI Alias)",
+                "parameters": [
+                    {
+                        "description": "Chat Completion Request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/dto.ChatCompletionRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/dto.ChatCompletionResponse"
                         }
                     }
                 }
@@ -787,184 +1052,67 @@ const docTemplate = `{
         }
     },
     "definitions": {
-        "gemini-web-to-api_internal_commons_models.FunctionCall": {
+        "admin.AddAccountRequest": {
             "type": "object",
             "properties": {
-                "arguments": {
+                "__Secure-1PSID": {
                     "type": "string"
                 },
-                "name": {
-                    "type": "string"
-                }
-            }
-        },
-        "gemini-web-to-api_internal_commons_models.Message": {
-            "type": "object",
-            "properties": {
-                "content": {
-                    "type": "string"
-                },
-                "role": {
-                    "type": "string"
-                },
-                "tool_call_id": {
-                    "type": "string"
-                },
-                "tool_calls": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/gemini-web-to-api_internal_commons_models.ToolCall"
-                    }
-                }
-            }
-        },
-        "gemini-web-to-api_internal_commons_models.ModelData": {
-            "type": "object",
-            "properties": {
-                "created": {
-                    "type": "integer"
-                },
-                "created_at": {
-                    "type": "integer"
-                },
-                "display_name": {
+                "__Secure-1PSIDTS": {
                     "type": "string"
                 },
                 "id": {
                     "type": "string"
-                },
-                "object": {
-                    "type": "string"
-                },
-                "owned_by": {
-                    "type": "string"
-                },
-                "type": {
-                    "type": "string"
                 }
             }
         },
-        "gemini-web-to-api_internal_commons_models.ModelListResponse": {
+        "admin.ConfigResponse": {
+            "type": "object",
+            "properties": {
+                "auto_delete_chat": {
+                    "type": "boolean"
+                },
+                "enable_guest_discovery": {
+                    "type": "boolean"
+                },
+                "log_raw_requests": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "admin.UpdateConfigRequest": {
+            "type": "object",
+            "properties": {
+                "auto_delete_chat": {
+                    "type": "boolean"
+                },
+                "enable_guest_discovery": {
+                    "type": "boolean"
+                },
+                "log_raw_requests": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "admin.UpdateConfigResponse": {
             "type": "object",
             "properties": {
                 "data": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/gemini-web-to-api_internal_commons_models.ModelData"
-                    }
+                    "$ref": "#/definitions/admin.ConfigResponse"
                 },
-                "object": {
+                "message": {
+                    "type": "string"
+                },
+                "status": {
                     "type": "string"
                 }
             }
         },
-        "gemini-web-to-api_internal_commons_models.ToolCall": {
-            "type": "object",
-            "properties": {
-                "function": {
-                    "$ref": "#/definitions/gemini-web-to-api_internal_commons_models.FunctionCall"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "type": {
-                    "type": "string"
-                }
-            }
-        },
-        "gemini-web-to-api_internal_commons_models.Usage": {
-            "type": "object",
-            "properties": {
-                "completion_tokens": {
-                    "type": "integer"
-                },
-                "completion_tokens_details": {},
-                "input_tokens": {
-                    "type": "integer"
-                },
-                "output_tokens": {
-                    "type": "integer"
-                },
-                "prompt_tokens": {
-                    "type": "integer"
-                },
-                "prompt_tokens_details": {},
-                "total_tokens": {
-                    "type": "integer"
-                }
-            }
-        },
-        "gemini-web-to-api_internal_modules_claude_dto.ConfigContent": {
-            "type": "object",
-            "properties": {
-                "text": {
-                    "type": "string"
-                },
-                "type": {
-                    "description": "\"text\"",
-                    "type": "string"
-                }
-            }
-        },
-        "gemini-web-to-api_internal_modules_claude_dto.MessageRequest": {
-            "type": "object",
-            "properties": {
-                "max_tokens": {
-                    "type": "integer"
-                },
-                "messages": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/gemini-web-to-api_internal_commons_models.Message"
-                    }
-                },
-                "model": {
-                    "type": "string"
-                },
-                "stream": {
-                    "type": "boolean"
-                },
-                "system": {
-                    "type": "string"
-                }
-            }
-        },
-        "gemini-web-to-api_internal_modules_claude_dto.MessageResponse": {
+        "dto.Candidate": {
             "type": "object",
             "properties": {
                 "content": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/gemini-web-to-api_internal_modules_claude_dto.ConfigContent"
-                    }
-                },
-                "id": {
-                    "type": "string"
-                },
-                "model": {
-                    "type": "string"
-                },
-                "role": {
-                    "description": "\"assistant\"",
-                    "type": "string"
-                },
-                "stop_reason": {
-                    "type": "string"
-                },
-                "type": {
-                    "description": "\"message\"",
-                    "type": "string"
-                },
-                "usage": {
-                    "$ref": "#/definitions/gemini-web-to-api_internal_commons_models.Usage"
-                }
-            }
-        },
-        "gemini-web-to-api_internal_modules_gemini_dto.Candidate": {
-            "type": "object",
-            "properties": {
-                "content": {
-                    "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.Content"
+                    "$ref": "#/definitions/dto.Content"
                 },
                 "finishMessage": {
                     "type": "string"
@@ -977,13 +1125,96 @@ const docTemplate = `{
                 }
             }
         },
-        "gemini-web-to-api_internal_modules_gemini_dto.Content": {
+        "dto.ChatCompletionRequest": {
+            "type": "object",
+            "properties": {
+                "max_tokens": {
+                    "type": "integer"
+                },
+                "messages": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.Message"
+                    }
+                },
+                "model": {
+                    "type": "string"
+                },
+                "response_format": {
+                    "$ref": "#/definitions/dto.ResponseFormat"
+                },
+                "stream": {
+                    "type": "boolean"
+                },
+                "temperature": {
+                    "type": "number"
+                },
+                "tools": {
+                    "type": "array",
+                    "items": {}
+                }
+            }
+        },
+        "dto.ChatCompletionResponse": {
+            "type": "object",
+            "properties": {
+                "choices": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/dto.Choice"
+                    }
+                },
+                "created": {
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "model": {
+                    "type": "string"
+                },
+                "object": {
+                    "type": "string"
+                },
+                "system_fingerprint": {},
+                "usage": {
+                    "$ref": "#/definitions/models.Usage"
+                }
+            }
+        },
+        "dto.Choice": {
+            "type": "object",
+            "properties": {
+                "finish_reason": {
+                    "type": "string"
+                },
+                "index": {
+                    "type": "integer"
+                },
+                "message": {
+                    "$ref": "#/definitions/models.Message"
+                }
+            }
+        },
+        "dto.ConfigContent": {
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string"
+                },
+                "type": {
+                    "description": "\"text\"",
+                    "type": "string"
+                }
+            }
+        },
+        "dto.Content": {
             "type": "object",
             "properties": {
                 "parts": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.Part"
+                        "$ref": "#/definitions/dto.Part"
                     }
                 },
                 "role": {
@@ -991,7 +1222,7 @@ const docTemplate = `{
                 }
             }
         },
-        "gemini-web-to-api_internal_modules_gemini_dto.DeepResearchRequest": {
+        "dto.DeepResearchRequest": {
             "type": "object",
             "properties": {
                 "language": {
@@ -1012,7 +1243,7 @@ const docTemplate = `{
                 }
             }
         },
-        "gemini-web-to-api_internal_modules_gemini_dto.DeepResearchResponse": {
+        "dto.DeepResearchResponse": {
             "type": "object",
             "properties": {
                 "completed_at": {
@@ -1047,7 +1278,7 @@ const docTemplate = `{
                     "description": "Sources used in research",
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.ResearchSource"
+                        "$ref": "#/definitions/dto.ResearchSource"
                     }
                 },
                 "status": {
@@ -1058,7 +1289,7 @@ const docTemplate = `{
                     "description": "Steps of research performed",
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.ResearchStep"
+                        "$ref": "#/definitions/dto.ResearchStep"
                     }
                 },
                 "summary": {
@@ -1067,17 +1298,17 @@ const docTemplate = `{
                 }
             }
         },
-        "gemini-web-to-api_internal_modules_gemini_dto.GeminiGenerateRequest": {
+        "dto.GeminiGenerateRequest": {
             "type": "object",
             "properties": {
                 "contents": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.Content"
+                        "$ref": "#/definitions/dto.Content"
                     }
                 },
                 "generationConfig": {
-                    "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.GenerationConfig"
+                    "$ref": "#/definitions/dto.GenerationConfig"
                 },
                 "safety_settings": {
                     "type": "array",
@@ -1090,21 +1321,21 @@ const docTemplate = `{
                 }
             }
         },
-        "gemini-web-to-api_internal_modules_gemini_dto.GeminiGenerateResponse": {
+        "dto.GeminiGenerateResponse": {
             "type": "object",
             "properties": {
                 "candidates": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.Candidate"
+                        "$ref": "#/definitions/dto.Candidate"
                     }
                 },
                 "usageMetadata": {
-                    "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.UsageMetadata"
+                    "$ref": "#/definitions/dto.UsageMetadata"
                 }
             }
         },
-        "gemini-web-to-api_internal_modules_gemini_dto.GeminiModel": {
+        "dto.GeminiModel": {
             "type": "object",
             "properties": {
                 "description": {
@@ -1127,18 +1358,18 @@ const docTemplate = `{
                 }
             }
         },
-        "gemini-web-to-api_internal_modules_gemini_dto.GeminiModelsResponse": {
+        "dto.GeminiModelsResponse": {
             "type": "object",
             "properties": {
                 "models": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.GeminiModel"
+                        "$ref": "#/definitions/dto.GeminiModel"
                     }
                 }
             }
         },
-        "gemini-web-to-api_internal_modules_gemini_dto.GenerationConfig": {
+        "dto.GenerationConfig": {
             "type": "object",
             "properties": {
                 "maxOutputTokens": {
@@ -1155,7 +1386,65 @@ const docTemplate = `{
                 }
             }
         },
-        "gemini-web-to-api_internal_modules_gemini_dto.InlineData": {
+        "dto.ImageData": {
+            "type": "object",
+            "properties": {
+                "b64_json": {
+                    "type": "string"
+                },
+                "revised_prompt": {
+                    "type": "string"
+                },
+                "url": {
+                    "type": "string"
+                }
+            }
+        },
+        "dto.ImageGenerationRequest": {
+            "type": "object",
+            "properties": {
+                "model": {
+                    "type": "string"
+                },
+                "n": {
+                    "type": "integer"
+                },
+                "prompt": {
+                    "type": "string"
+                },
+                "quality": {
+                    "type": "string"
+                },
+                "response_format": {
+                    "description": "\"url\" or \"b64_json\"",
+                    "type": "string"
+                },
+                "size": {
+                    "type": "string"
+                },
+                "style": {
+                    "type": "string"
+                },
+                "user": {
+                    "type": "string"
+                }
+            }
+        },
+        "dto.ImageGenerationResponse": {
+            "type": "object",
+            "properties": {
+                "created": {
+                    "type": "integer"
+                },
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/dto.ImageData"
+                    }
+                }
+            }
+        },
+        "dto.InlineData": {
             "type": "object",
             "properties": {
                 "data": {
@@ -1166,7 +1455,7 @@ const docTemplate = `{
                 }
             }
         },
-        "gemini-web-to-api_internal_modules_gemini_dto.InteractionCreateRequest": {
+        "dto.InteractionCreateRequest": {
             "type": "object",
             "properties": {
                 "agent": {
@@ -1195,7 +1484,7 @@ const docTemplate = `{
                 }
             }
         },
-        "gemini-web-to-api_internal_modules_gemini_dto.InteractionOutput": {
+        "dto.InteractionOutput": {
             "type": "object",
             "properties": {
                 "text": {
@@ -1204,7 +1493,7 @@ const docTemplate = `{
                 }
             }
         },
-        "gemini-web-to-api_internal_modules_gemini_dto.InteractionResponse": {
+        "dto.InteractionResponse": {
             "type": "object",
             "properties": {
                 "completed_at": {
@@ -1231,7 +1520,7 @@ const docTemplate = `{
                     "description": "Outputs list of output items (non-empty when completed)",
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.InteractionOutput"
+                        "$ref": "#/definitions/dto.InteractionOutput"
                     }
                 },
                 "query": {
@@ -1242,7 +1531,7 @@ const docTemplate = `{
                     "description": "Sources consulted during research",
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.ResearchSource"
+                        "$ref": "#/definitions/dto.ResearchSource"
                     }
                 },
                 "status": {
@@ -1253,23 +1542,77 @@ const docTemplate = `{
                     "description": "Steps research steps performed",
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.ResearchStep"
+                        "$ref": "#/definitions/dto.ResearchStep"
                     }
                 }
             }
         },
-        "gemini-web-to-api_internal_modules_gemini_dto.Part": {
+        "dto.MessageRequest": {
+            "type": "object",
+            "properties": {
+                "max_tokens": {
+                    "type": "integer"
+                },
+                "messages": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.Message"
+                    }
+                },
+                "model": {
+                    "type": "string"
+                },
+                "stream": {
+                    "type": "boolean"
+                },
+                "system": {
+                    "type": "string"
+                }
+            }
+        },
+        "dto.MessageResponse": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/dto.ConfigContent"
+                    }
+                },
+                "id": {
+                    "type": "string"
+                },
+                "model": {
+                    "type": "string"
+                },
+                "role": {
+                    "description": "\"assistant\"",
+                    "type": "string"
+                },
+                "stop_reason": {
+                    "type": "string"
+                },
+                "type": {
+                    "description": "\"message\"",
+                    "type": "string"
+                },
+                "usage": {
+                    "$ref": "#/definitions/models.Usage"
+                }
+            }
+        },
+        "dto.Part": {
             "type": "object",
             "properties": {
                 "inlineData": {
-                    "$ref": "#/definitions/gemini-web-to-api_internal_modules_gemini_dto.InlineData"
+                    "$ref": "#/definitions/dto.InlineData"
                 },
                 "text": {
                     "type": "string"
                 }
             }
         },
-        "gemini-web-to-api_internal_modules_gemini_dto.ResearchSource": {
+        "dto.ResearchSource": {
             "type": "object",
             "properties": {
                 "domain": {
@@ -1290,7 +1633,7 @@ const docTemplate = `{
                 }
             }
         },
-        "gemini-web-to-api_internal_modules_gemini_dto.ResearchStep": {
+        "dto.ResearchStep": {
             "type": "object",
             "properties": {
                 "description": {
@@ -1315,7 +1658,15 @@ const docTemplate = `{
                 }
             }
         },
-        "gemini-web-to-api_internal_modules_gemini_dto.UsageMetadata": {
+        "dto.ResponseFormat": {
+            "type": "object",
+            "properties": {
+                "type": {
+                    "type": "string"
+                }
+            }
+        },
+        "dto.UsageMetadata": {
             "type": "object",
             "properties": {
                 "candidatesTokenCount": {
@@ -1329,86 +1680,114 @@ const docTemplate = `{
                 }
             }
         },
-        "gemini-web-to-api_internal_modules_openai_dto.ChatCompletionRequest": {
+        "models.FunctionCall": {
             "type": "object",
             "properties": {
-                "max_tokens": {
-                    "type": "integer"
-                },
-                "messages": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/gemini-web-to-api_internal_commons_models.Message"
-                    }
-                },
-                "model": {
+                "arguments": {
                     "type": "string"
                 },
-                "response_format": {
-                    "$ref": "#/definitions/gemini-web-to-api_internal_modules_openai_dto.ResponseFormat"
-                },
-                "stream": {
-                    "type": "boolean"
-                },
-                "temperature": {
-                    "type": "number"
-                },
-                "tools": {
-                    "type": "array",
-                    "items": {}
+                "name": {
+                    "type": "string"
                 }
             }
         },
-        "gemini-web-to-api_internal_modules_openai_dto.ChatCompletionResponse": {
+        "models.Message": {
             "type": "object",
             "properties": {
-                "choices": {
+                "content": {
+                    "type": "string"
+                },
+                "role": {
+                    "type": "string"
+                },
+                "tool_call_id": {
+                    "type": "string"
+                },
+                "tool_calls": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/gemini-web-to-api_internal_modules_openai_dto.Choice"
+                        "$ref": "#/definitions/models.ToolCall"
                     }
-                },
+                }
+            }
+        },
+        "models.ModelData": {
+            "type": "object",
+            "properties": {
                 "created": {
                     "type": "integer"
                 },
-                "id": {
+                "created_at": {
+                    "type": "integer"
+                },
+                "display_name": {
                     "type": "string"
                 },
-                "model": {
+                "id": {
                     "type": "string"
                 },
                 "object": {
                     "type": "string"
                 },
-                "system_fingerprint": {},
-                "usage": {
-                    "$ref": "#/definitions/gemini-web-to-api_internal_commons_models.Usage"
-                }
-            }
-        },
-        "gemini-web-to-api_internal_modules_openai_dto.Choice": {
-            "type": "object",
-            "properties": {
-                "finish_reason": {
+                "owned_by": {
                     "type": "string"
                 },
-                "index": {
-                    "type": "integer"
-                },
-                "message": {
-                    "$ref": "#/definitions/gemini-web-to-api_internal_commons_models.Message"
-                }
-            }
-        },
-        "gemini-web-to-api_internal_modules_openai_dto.ResponseFormat": {
-            "type": "object",
-            "properties": {
                 "type": {
                     "type": "string"
                 }
             }
         },
-        "gemini-web-to-api_internal_modules_providers.AccountConfig": {
+        "models.ModelListResponse": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.ModelData"
+                    }
+                },
+                "object": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.ToolCall": {
+            "type": "object",
+            "properties": {
+                "function": {
+                    "$ref": "#/definitions/models.FunctionCall"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "type": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.Usage": {
+            "type": "object",
+            "properties": {
+                "completion_tokens": {
+                    "type": "integer"
+                },
+                "completion_tokens_details": {},
+                "input_tokens": {
+                    "type": "integer"
+                },
+                "output_tokens": {
+                    "type": "integer"
+                },
+                "prompt_tokens": {
+                    "type": "integer"
+                },
+                "prompt_tokens_details": {},
+                "total_tokens": {
+                    "type": "integer"
+                }
+            }
+        },
+        "providers.AccountConfig": {
             "type": "object",
             "properties": {
                 "__Secure-1PSID": {
@@ -1427,7 +1806,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "status": {
-                    "$ref": "#/definitions/gemini-web-to-api_internal_modules_providers.AccountStatus"
+                    "$ref": "#/definitions/providers.AccountStatus"
                 },
                 "success_count": {
                     "type": "integer"
@@ -1440,7 +1819,7 @@ const docTemplate = `{
                 }
             }
         },
-        "gemini-web-to-api_internal_modules_providers.AccountStatus": {
+        "providers.AccountStatus": {
             "type": "string",
             "enum": [
                 "Healthy",
@@ -1452,31 +1831,6 @@ const docTemplate = `{
                 "StatusError",
                 "StatusBanned"
             ]
-        },
-        "internal_modules_admin.AddAccountRequest": {
-            "type": "object",
-            "properties": {
-                "__Secure-1PSID": {
-                    "type": "string"
-                },
-                "__Secure-1PSIDTS": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                }
-            }
-        },
-        "internal_modules_admin.UpdateConfigRequest": {
-            "type": "object",
-            "properties": {
-                "auto_delete_chat": {
-                    "type": "boolean"
-                },
-                "log_raw_requests": {
-                    "type": "boolean"
-                }
-            }
         }
     },
     "securityDefinitions": {

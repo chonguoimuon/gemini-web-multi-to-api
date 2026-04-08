@@ -1,101 +1,45 @@
 basePath: /
 definitions:
-  gemini-web-to-api_internal_commons_models.Message:
+  admin.AddAccountRequest:
     properties:
-      content:
+      __Secure-1PSID:
         type: string
-      role:
-        type: string
-    type: object
-  gemini-web-to-api_internal_commons_models.ModelData:
-    properties:
-      created:
-        type: integer
-      created_at:
-        type: integer
-      display_name:
+      __Secure-1PSIDTS:
         type: string
       id:
         type: string
-      object:
-        type: string
-      owned_by:
-        type: string
-      type:
-        type: string
     type: object
-  gemini-web-to-api_internal_commons_models.ModelListResponse:
+  admin.ConfigResponse:
+    properties:
+      auto_delete_chat:
+        type: boolean
+      enable_guest_discovery:
+        type: boolean
+      log_raw_requests:
+        type: boolean
+    type: object
+  admin.UpdateConfigRequest:
+    properties:
+      auto_delete_chat:
+        type: boolean
+      enable_guest_discovery:
+        type: boolean
+      log_raw_requests:
+        type: boolean
+    type: object
+  admin.UpdateConfigResponse:
     properties:
       data:
-        items:
-          $ref: '#/definitions/gemini-web-to-api_internal_commons_models.ModelData'
-        type: array
-      object:
+        $ref: '#/definitions/admin.ConfigResponse'
+      message:
+        type: string
+      status:
         type: string
     type: object
-  gemini-web-to-api_internal_commons_models.Usage:
-    properties:
-      completion_tokens:
-        type: integer
-      completion_tokens_details: {}
-      input_tokens:
-        type: integer
-      output_tokens:
-        type: integer
-      prompt_tokens:
-        type: integer
-      prompt_tokens_details: {}
-      total_tokens:
-        type: integer
-    type: object
-  gemini-web-to-api_internal_modules_claude_dto.ConfigContent:
-    properties:
-      text:
-        type: string
-      type:
-        description: '"text"'
-        type: string
-    type: object
-  gemini-web-to-api_internal_modules_claude_dto.MessageRequest:
-    properties:
-      max_tokens:
-        type: integer
-      messages:
-        items:
-          $ref: '#/definitions/gemini-web-to-api_internal_commons_models.Message'
-        type: array
-      model:
-        type: string
-      stream:
-        type: boolean
-      system:
-        type: string
-    type: object
-  gemini-web-to-api_internal_modules_claude_dto.MessageResponse:
+  dto.Candidate:
     properties:
       content:
-        items:
-          $ref: '#/definitions/gemini-web-to-api_internal_modules_claude_dto.ConfigContent'
-        type: array
-      id:
-        type: string
-      model:
-        type: string
-      role:
-        description: '"assistant"'
-        type: string
-      stop_reason:
-        type: string
-      type:
-        description: '"message"'
-        type: string
-      usage:
-        $ref: '#/definitions/gemini-web-to-api_internal_commons_models.Usage'
-    type: object
-  gemini-web-to-api_internal_modules_gemini_dto.Candidate:
-    properties:
-      content:
-        $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.Content'
+        $ref: '#/definitions/dto.Content'
       finishMessage:
         type: string
       finishReason:
@@ -103,16 +47,71 @@ definitions:
       index:
         type: integer
     type: object
-  gemini-web-to-api_internal_modules_gemini_dto.Content:
+  dto.ChatCompletionRequest:
+    properties:
+      max_tokens:
+        type: integer
+      messages:
+        items:
+          $ref: '#/definitions/models.Message'
+        type: array
+      model:
+        type: string
+      response_format:
+        $ref: '#/definitions/dto.ResponseFormat'
+      stream:
+        type: boolean
+      temperature:
+        type: number
+      tools:
+        items: {}
+        type: array
+    type: object
+  dto.ChatCompletionResponse:
+    properties:
+      choices:
+        items:
+          $ref: '#/definitions/dto.Choice'
+        type: array
+      created:
+        type: integer
+      id:
+        type: string
+      model:
+        type: string
+      object:
+        type: string
+      system_fingerprint: {}
+      usage:
+        $ref: '#/definitions/models.Usage'
+    type: object
+  dto.Choice:
+    properties:
+      finish_reason:
+        type: string
+      index:
+        type: integer
+      message:
+        $ref: '#/definitions/models.Message'
+    type: object
+  dto.ConfigContent:
+    properties:
+      text:
+        type: string
+      type:
+        description: '"text"'
+        type: string
+    type: object
+  dto.Content:
     properties:
       parts:
         items:
-          $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.Part'
+          $ref: '#/definitions/dto.Part'
         type: array
       role:
         type: string
     type: object
-  gemini-web-to-api_internal_modules_gemini_dto.DeepResearchRequest:
+  dto.DeepResearchRequest:
     properties:
       language:
         description: Language for the response (optional, e.g. "en", "vi")
@@ -127,7 +126,7 @@ definitions:
         description: Query is the research topic or question
         type: string
     type: object
-  gemini-web-to-api_internal_modules_gemini_dto.DeepResearchResponse:
+  dto.DeepResearchResponse:
     properties:
       completed_at:
         description: CompletedAt timestamp (Unix seconds), 0 if not completed
@@ -153,7 +152,7 @@ definitions:
       sources:
         description: Sources used in research
         items:
-          $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.ResearchSource'
+          $ref: '#/definitions/dto.ResearchSource'
         type: array
       status:
         description: 'Status: "in_progress", "completed", "failed"'
@@ -161,20 +160,20 @@ definitions:
       steps:
         description: Steps of research performed
         items:
-          $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.ResearchStep'
+          $ref: '#/definitions/dto.ResearchStep'
         type: array
       summary:
         description: Summary is the synthesized research report
         type: string
     type: object
-  gemini-web-to-api_internal_modules_gemini_dto.GeminiGenerateRequest:
+  dto.GeminiGenerateRequest:
     properties:
       contents:
         items:
-          $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.Content'
+          $ref: '#/definitions/dto.Content'
         type: array
       generationConfig:
-        $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.GenerationConfig'
+        $ref: '#/definitions/dto.GenerationConfig'
       safety_settings:
         items:
           additionalProperties:
@@ -182,16 +181,16 @@ definitions:
           type: object
         type: array
     type: object
-  gemini-web-to-api_internal_modules_gemini_dto.GeminiGenerateResponse:
+  dto.GeminiGenerateResponse:
     properties:
       candidates:
         items:
-          $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.Candidate'
+          $ref: '#/definitions/dto.Candidate'
         type: array
       usageMetadata:
-        $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.UsageMetadata'
+        $ref: '#/definitions/dto.UsageMetadata'
     type: object
-  gemini-web-to-api_internal_modules_gemini_dto.GeminiModel:
+  dto.GeminiModel:
     properties:
       description:
         type: string
@@ -206,14 +205,14 @@ definitions:
       version:
         type: string
     type: object
-  gemini-web-to-api_internal_modules_gemini_dto.GeminiModelsResponse:
+  dto.GeminiModelsResponse:
     properties:
       models:
         items:
-          $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.GeminiModel'
+          $ref: '#/definitions/dto.GeminiModel'
         type: array
     type: object
-  gemini-web-to-api_internal_modules_gemini_dto.GenerationConfig:
+  dto.GenerationConfig:
     properties:
       maxOutputTokens:
         type: integer
@@ -224,14 +223,52 @@ definitions:
       topP:
         type: number
     type: object
-  gemini-web-to-api_internal_modules_gemini_dto.InlineData:
+  dto.ImageData:
+    properties:
+      b64_json:
+        type: string
+      revised_prompt:
+        type: string
+      url:
+        type: string
+    type: object
+  dto.ImageGenerationRequest:
+    properties:
+      model:
+        type: string
+      "n":
+        type: integer
+      prompt:
+        type: string
+      quality:
+        type: string
+      response_format:
+        description: '"url" or "b64_json"'
+        type: string
+      size:
+        type: string
+      style:
+        type: string
+      user:
+        type: string
+    type: object
+  dto.ImageGenerationResponse:
+    properties:
+      created:
+        type: integer
+      data:
+        items:
+          $ref: '#/definitions/dto.ImageData'
+        type: array
+    type: object
+  dto.InlineData:
     properties:
       data:
         type: string
       mimeType:
         type: string
     type: object
-  gemini-web-to-api_internal_modules_gemini_dto.InteractionCreateRequest:
+  dto.InteractionCreateRequest:
     properties:
       agent:
         description: Agent selects the research mode (e.g. "deep-research-pro-preview-12-2025")
@@ -254,13 +291,13 @@ definitions:
           events
         type: boolean
     type: object
-  gemini-web-to-api_internal_modules_gemini_dto.InteractionOutput:
+  dto.InteractionOutput:
     properties:
       text:
         description: Text is the research report text
         type: string
     type: object
-  gemini-web-to-api_internal_modules_gemini_dto.InteractionResponse:
+  dto.InteractionResponse:
     properties:
       completed_at:
         description: CompletedAt Unix timestamp (0 if not yet completed)
@@ -280,7 +317,7 @@ definitions:
       outputs:
         description: Outputs list of output items (non-empty when completed)
         items:
-          $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.InteractionOutput'
+          $ref: '#/definitions/dto.InteractionOutput'
         type: array
       query:
         description: Query that was researched
@@ -288,7 +325,7 @@ definitions:
       sources:
         description: Sources consulted during research
         items:
-          $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.ResearchSource'
+          $ref: '#/definitions/dto.ResearchSource'
         type: array
       status:
         description: 'Status: "in_progress", "completed", "failed"'
@@ -296,17 +333,53 @@ definitions:
       steps:
         description: Steps research steps performed
         items:
-          $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.ResearchStep'
+          $ref: '#/definitions/dto.ResearchStep'
         type: array
     type: object
-  gemini-web-to-api_internal_modules_gemini_dto.Part:
+  dto.MessageRequest:
+    properties:
+      max_tokens:
+        type: integer
+      messages:
+        items:
+          $ref: '#/definitions/models.Message'
+        type: array
+      model:
+        type: string
+      stream:
+        type: boolean
+      system:
+        type: string
+    type: object
+  dto.MessageResponse:
+    properties:
+      content:
+        items:
+          $ref: '#/definitions/dto.ConfigContent'
+        type: array
+      id:
+        type: string
+      model:
+        type: string
+      role:
+        description: '"assistant"'
+        type: string
+      stop_reason:
+        type: string
+      type:
+        description: '"message"'
+        type: string
+      usage:
+        $ref: '#/definitions/models.Usage'
+    type: object
+  dto.Part:
     properties:
       inlineData:
-        $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.InlineData'
+        $ref: '#/definitions/dto.InlineData'
       text:
         type: string
     type: object
-  gemini-web-to-api_internal_modules_gemini_dto.ResearchSource:
+  dto.ResearchSource:
     properties:
       domain:
         description: Domain of the source
@@ -321,7 +394,7 @@ definitions:
         description: URL of the source
         type: string
     type: object
-  gemini-web-to-api_internal_modules_gemini_dto.ResearchStep:
+  dto.ResearchStep:
     properties:
       description:
         description: Description of what this step did
@@ -339,7 +412,12 @@ definitions:
         description: 'Type of step: "search", "read", "synthesize", "outline", "write"'
         type: string
     type: object
-  gemini-web-to-api_internal_modules_gemini_dto.UsageMetadata:
+  dto.ResponseFormat:
+    properties:
+      type:
+        type: string
+    type: object
+  dto.UsageMetadata:
     properties:
       candidatesTokenCount:
         type: integer
@@ -348,49 +426,77 @@ definitions:
       totalTokenCount:
         type: integer
     type: object
-  gemini-web-to-api_internal_modules_openai_dto.ChatCompletionRequest:
+  models.FunctionCall:
     properties:
-      max_tokens:
-        type: integer
-      messages:
-        items:
-          $ref: '#/definitions/gemini-web-to-api_internal_commons_models.Message'
-        type: array
-      model:
+      arguments:
         type: string
-      stream:
-        type: boolean
-      temperature:
-        type: number
+      name:
+        type: string
     type: object
-  gemini-web-to-api_internal_modules_openai_dto.ChatCompletionResponse:
+  models.Message:
     properties:
-      choices:
+      content:
+        type: string
+      role:
+        type: string
+      tool_call_id:
+        type: string
+      tool_calls:
         items:
-          $ref: '#/definitions/gemini-web-to-api_internal_modules_openai_dto.Choice'
+          $ref: '#/definitions/models.ToolCall'
         type: array
+    type: object
+  models.ModelData:
+    properties:
       created:
         type: integer
-      id:
+      created_at:
+        type: integer
+      display_name:
         type: string
-      model:
+      id:
         type: string
       object:
         type: string
-      system_fingerprint: {}
-      usage:
-        $ref: '#/definitions/gemini-web-to-api_internal_commons_models.Usage'
-    type: object
-  gemini-web-to-api_internal_modules_openai_dto.Choice:
-    properties:
-      finish_reason:
+      owned_by:
         type: string
-      index:
-        type: integer
-      message:
-        $ref: '#/definitions/gemini-web-to-api_internal_commons_models.Message'
+      type:
+        type: string
     type: object
-  gemini-web-to-api_internal_modules_providers.AccountConfig:
+  models.ModelListResponse:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/models.ModelData'
+        type: array
+      object:
+        type: string
+    type: object
+  models.ToolCall:
+    properties:
+      function:
+        $ref: '#/definitions/models.FunctionCall'
+      id:
+        type: string
+      type:
+        type: string
+    type: object
+  models.Usage:
+    properties:
+      completion_tokens:
+        type: integer
+      completion_tokens_details: {}
+      input_tokens:
+        type: integer
+      output_tokens:
+        type: integer
+      prompt_tokens:
+        type: integer
+      prompt_tokens_details: {}
+      total_tokens:
+        type: integer
+    type: object
+  providers.AccountConfig:
     properties:
       __Secure-1PSID:
         type: string
@@ -403,7 +509,7 @@ definitions:
       id:
         type: string
       status:
-        $ref: '#/definitions/gemini-web-to-api_internal_modules_providers.AccountStatus'
+        $ref: '#/definitions/providers.AccountStatus'
       success_count:
         type: integer
       target_ip:
@@ -411,7 +517,7 @@ definitions:
       updated_at:
         type: integer
     type: object
-  gemini-web-to-api_internal_modules_providers.AccountStatus:
+  providers.AccountStatus:
     enum:
     - Healthy
     - Error
@@ -421,15 +527,6 @@ definitions:
     - StatusHealthy
     - StatusError
     - StatusBanned
-  internal_modules_admin.AddAccountRequest:
-    properties:
-      __Secure-1PSID:
-        type: string
-      __Secure-1PSIDTS:
-        type: string
-      id:
-        type: string
-    type: object
 info:
   contact: {}
   description: ✨Reverse-engineered API for Gemini web app. It can be used as a genuine
@@ -450,7 +547,7 @@ paths:
           description: OK
           schema:
             items:
-              $ref: '#/definitions/gemini-web-to-api_internal_modules_providers.AccountConfig'
+              $ref: '#/definitions/providers.AccountConfig'
             type: array
         "401":
           description: Unauthorized
@@ -473,7 +570,7 @@ paths:
         name: request
         required: true
         schema:
-          $ref: '#/definitions/internal_modules_admin.AddAccountRequest'
+          $ref: '#/definitions/admin.AddAccountRequest'
       produces:
       - application/json
       responses:
@@ -521,6 +618,21 @@ paths:
       summary: Delete a Cookie Account
       tags:
       - Admin
+  /admin/v1/accounts/{id}/clear-bot:
+    post:
+      description: Manually triggers the Rod browser to perform "hãy trả lời ok" interaction
+      parameters:
+      - description: Account ID
+        in: path
+        name: id
+        required: true
+        type: string
+      responses: {}
+      security:
+      - BearerAuth: []
+      summary: Clear Bot for specific account
+      tags:
+      - Admin
   /admin/v1/accounts/{id}/test:
     post:
       consumes:
@@ -551,6 +663,197 @@ paths:
       summary: Test Account Rotation
       tags:
       - Admin
+  /admin/v1/accounts/clear-all-bots:
+    post:
+      description: Sweeps all accounts and performs bot clearance on those with errors
+      responses: {}
+      security:
+      - BearerAuth: []
+      summary: Clear All Bots
+      tags:
+      - Admin
+  /admin/v1/config:
+    get:
+      consumes:
+      - application/json
+      description: Returns the dynamic runtime configurations
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/admin.ConfigResponse'
+      security:
+      - BearerAuth: []
+      summary: Get Current Configuration
+      tags:
+      - Admin
+    put:
+      consumes:
+      - application/json
+      description: Dynamically updates runtime configs like logging and chat deletion
+      parameters:
+      - description: Configuration Toggles
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/admin.UpdateConfigRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/admin.UpdateConfigResponse'
+      security:
+      - BearerAuth: []
+      summary: Update Configuration
+      tags:
+      - Admin
+  /admin/v1/guest/discover:
+    post:
+      description: Manually triggers the discovery service to find and learn new AI
+        guest platforms
+      responses: {}
+      security:
+      - BearerAuth: []
+      summary: Trigger Guest Discovery
+      tags:
+      - Guest
+  /admin/v1/guest/platforms:
+    get:
+      description: Returns the list of discovered and valid guest chat platforms
+      responses: {}
+      security:
+      - BearerAuth: []
+      summary: List Guest Platforms
+      tags:
+      - Guest
+  /admin/v1/guest/platforms/{id}:
+    delete:
+      description: Removes a discovered guest platform from the system
+      parameters:
+      - description: Platform ID
+        in: path
+        name: id
+        required: true
+        type: string
+      responses: {}
+      security:
+      - BearerAuth: []
+      summary: Delete Guest Platform
+      tags:
+      - Guest
+    put:
+      description: Enable or disable a discovered guest platform
+      parameters:
+      - description: Platform ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 'Status Object: {''disabled'': true}'
+        in: body
+        name: request
+        required: true
+        schema:
+          additionalProperties:
+            type: boolean
+          type: object
+      responses: {}
+      security:
+      - BearerAuth: []
+      summary: Toggle Guest Platform Status
+      tags:
+      - Guest
+  /admin/v1/guest/platforms/{id}/disable:
+    post:
+      description: Manually disable a discovered guest platform to skip discovery/use
+      parameters:
+      - description: Platform ID
+        in: path
+        name: id
+        required: true
+        type: string
+      responses: {}
+      security:
+      - BearerAuth: []
+      summary: Disable Guest Platform
+      tags:
+      - Guest
+  /admin/v1/guest/platforms/{id}/enable:
+    post:
+      description: Manually re-enable a disabled guest platform
+      parameters:
+      - description: Platform ID
+        in: path
+        name: id
+        required: true
+        type: string
+      responses: {}
+      security:
+      - BearerAuth: []
+      summary: Enable Guest Platform
+      tags:
+      - Guest
+  /admin/v1/guest/platforms/{id}/test:
+    post:
+      description: Send 'hello' to a guest platform to verify it's working
+      parameters:
+      - description: Platform ID
+        in: path
+        name: id
+        required: true
+        type: string
+      responses: {}
+      security:
+      - BearerAuth: []
+      summary: Test Guest Platform
+      tags:
+      - Guest
+  /admin/v1/guest/relearn:
+    post:
+      description: Resets learned structure for guest platforms and initiates re-learning
+      parameters:
+      - description: Specific Platform ID (optional, omit for ALL)
+        in: query
+        name: id
+        type: string
+      responses: {}
+      security:
+      - BearerAuth: []
+      summary: Re-learn Guest Platforms
+      tags:
+      - Guest
+  /admin/v1/schema/reset:
+    post:
+      description: Resets the GJSON extraction paths to default and triggers healing
+      responses: {}
+      security:
+      - BearerAuth: []
+      summary: Reset Schema Extractor
+      tags:
+      - Admin
+  /admin/v1/schema/retry:
+    post:
+      description: Manually triggers the self-healing process to find new GJSON paths
+      responses: {}
+      security:
+      - BearerAuth: []
+      summary: Retry Healing
+      tags:
+      - Admin
+  /admin/v1/schema/status:
+    get:
+      description: Returns the current GJSON schema and healing status
+      responses: {}
+      security:
+      - BearerAuth: []
+      summary: Get Schema Status
+      tags:
+      - Admin
   /claude/v1/messages:
     post:
       consumes:
@@ -562,14 +865,14 @@ paths:
         name: request
         required: true
         schema:
-          $ref: '#/definitions/gemini-web-to-api_internal_modules_claude_dto.MessageRequest'
+          $ref: '#/definitions/dto.MessageRequest'
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/gemini-web-to-api_internal_modules_claude_dto.MessageResponse'
+            $ref: '#/definitions/dto.MessageResponse'
         "400":
           description: Bad Request
           schema:
@@ -594,7 +897,7 @@ paths:
         name: request
         required: true
         schema:
-          $ref: '#/definitions/gemini-web-to-api_internal_modules_claude_dto.MessageRequest'
+          $ref: '#/definitions/dto.MessageRequest'
       produces:
       - application/json
       responses:
@@ -657,14 +960,14 @@ paths:
         name: request
         required: true
         schema:
-          $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.DeepResearchRequest'
+          $ref: '#/definitions/dto.DeepResearchRequest'
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.DeepResearchResponse'
+            $ref: '#/definitions/dto.DeepResearchResponse'
         "400":
           description: Bad Request – query is missing
           schema:
@@ -692,7 +995,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.InteractionResponse'
+            $ref: '#/definitions/dto.InteractionResponse'
         "404":
           description: Not Found
           schema:
@@ -712,14 +1015,14 @@ paths:
         name: request
         required: true
         schema:
-          $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.InteractionCreateRequest'
+          $ref: '#/definitions/dto.InteractionCreateRequest'
       produces:
       - application/json
       responses:
         "202":
           description: Accepted
           schema:
-            $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.InteractionResponse'
+            $ref: '#/definitions/dto.InteractionResponse'
       summary: Create Deep Research Interaction
       tags:
       - Gemini
@@ -735,7 +1038,7 @@ paths:
         name: request
         required: true
         schema:
-          $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.DeepResearchRequest'
+          $ref: '#/definitions/dto.DeepResearchRequest'
       produces:
       - text/event-stream
       responses:
@@ -761,7 +1064,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.GeminiModelsResponse'
+            $ref: '#/definitions/dto.GeminiModelsResponse'
       summary: List Gemini Models
       tags:
       - Gemini
@@ -781,14 +1084,14 @@ paths:
         name: request
         required: true
         schema:
-          $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.GeminiGenerateRequest'
+          $ref: '#/definitions/dto.GeminiGenerateRequest'
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.GeminiGenerateResponse'
+            $ref: '#/definitions/dto.GeminiGenerateResponse'
       summary: Generate Content (Gemini)
       tags:
       - Gemini
@@ -808,7 +1111,7 @@ paths:
         name: request
         required: true
         schema:
-          $ref: '#/definitions/gemini-web-to-api_internal_modules_gemini_dto.GeminiGenerateRequest'
+          $ref: '#/definitions/dto.GeminiGenerateRequest'
       produces:
       - application/json
       responses:
@@ -838,6 +1141,26 @@ paths:
       summary: Health check
       tags:
       - System
+  /mcp/tools:
+    get:
+      consumes:
+      - application/json
+      description: Returns a list of tools registered in the MCP server. Use this
+        to verify MCP is active.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              type: object
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List MCP Tools
+      tags:
+      - MCP
   /openai/v1/chat/completions:
     post:
       consumes:
@@ -849,14 +1172,14 @@ paths:
         name: request
         required: true
         schema:
-          $ref: '#/definitions/gemini-web-to-api_internal_modules_openai_dto.ChatCompletionRequest'
+          $ref: '#/definitions/dto.ChatCompletionRequest'
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/gemini-web-to-api_internal_modules_openai_dto.ChatCompletionResponse'
+            $ref: '#/definitions/dto.ChatCompletionResponse'
         "400":
           description: Bad Request
           schema:
@@ -870,6 +1193,38 @@ paths:
       summary: Chat Completions (OpenAI)
       tags:
       - OpenAI
+  /openai/v1/images/generations:
+    post:
+      consumes:
+      - application/json
+      description: Creates an image given a prompt
+      parameters:
+      - description: Image Generation Request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.ImageGenerationRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.ImageGenerationResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Image Generations (OpenAI)
+      tags:
+      - OpenAI
   /openai/v1/models:
     get:
       consumes:
@@ -881,8 +1236,30 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/gemini-web-to-api_internal_commons_models.ModelListResponse'
+            $ref: '#/definitions/models.ModelListResponse'
       summary: List OpenAI Models
+      tags:
+      - OpenAI
+  /openai/v1/responses:
+    post:
+      consumes:
+      - application/json
+      description: Alias for chat completions for specific external integration requirements
+      parameters:
+      - description: Chat Completion Request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.ChatCompletionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.ChatCompletionResponse'
+      summary: Chat Responses (OpenAI Alias)
       tags:
       - OpenAI
 securityDefinitions:

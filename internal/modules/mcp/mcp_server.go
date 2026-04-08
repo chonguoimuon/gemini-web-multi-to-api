@@ -35,7 +35,10 @@ type CodeExpertInput struct {
 }
 
 type ResearchInput struct {
-	Query string `json:"query" jsonschema:"The research query/topic"`
+	Query      string `json:"query" jsonschema:"The search query or research topic"`
+	Model      string `json:"model,omitempty" jsonschema:"Optional model ID"`
+	Language   string `json:"language,omitempty" jsonschema:"Language for research (e.g., 'en', 'vi')"`
+	MaxSources int    `json:"max_sources,omitempty" jsonschema:"Maximum sources to crawl"`
 }
 
 func NewMCPServer(gemini *gemini.GeminiService, log *zap.Logger, cfg *configs.Config) *MCPServer {
@@ -70,27 +73,33 @@ func NewMCPServer(gemini *gemini.GeminiService, log *zap.Logger, cfg *configs.Co
 func (s *MCPServer) registerTools() {
 	// 1. Gemini Chat Tool
 	mcp.AddTool(s.server, &mcp.Tool{
-		Name:        "gemini_chat",
-		Description: "General purpose chat with Gemini accounts. Supports long context and reasoning.",
+		Name:        "ask_gemini",
+		Description: "General purpose chat with Gemini accounts. Supports long context, reasoning, and multi-turn chat.",
 	}, s.handleChat)
 
 	// 2. Gemini Code Expert Tool
 	mcp.AddTool(s.server, &mcp.Tool{
-		Name:        "gemini_code_expert",
-		Description: "Specialized tool for writing, refactoring, and debugging code. Uses optimized prompts for high-quality software engineering output.",
+		Name:        "coding_expert",
+		Description: "Specialized tool for writing, refactoring, and debugging code. Uses optimized prompts for high-quality software engineering output. Provides full code context support.",
 	}, s.handleCodeExpert)
 
-	// 3. Gemini Deep Research Tool
+	// 3. Gemini Deep Research Tool (Exposed as google_search for better agent synergy)
 	mcp.AddTool(s.server, &mcp.Tool{
-		Name:        "gemini_research",
-		Description: "Performs deep research on a topic, searching multiple sub-questions and synthesizing a comprehensive report.",
+		Name:        "google_search",
+		Description: "Performs deep web research using Google. Returns a comprehensive summary and cited sources. Use this for complex queries requiring recent or broad information.",
 	}, s.handleResearch)
 
 	// 4. Account Info Tool
 	mcp.AddTool(s.server, &mcp.Tool{
 		Name:        "account_status",
-		Description: "Returns the status and health of configured Gemini accounts.",
+		Description: "Returns the status and health of the configured Gemini account pool.",
 	}, s.handleAccountStatus)
+
+	// 5. Discover New Guests Tool
+	mcp.AddTool(s.server, &mcp.Tool{
+		Name:        "discover_guests",
+		Description: "Triggers a search for new AI chat platforms that allow guest access for load balancing.",
+	}, s.handleDiscoverGuests)
 }
 
 func (s *MCPServer) GetSSEHandler() *mcp.SSEHandler {
@@ -99,7 +108,7 @@ func (s *MCPServer) GetSSEHandler() *mcp.SSEHandler {
 
 func (s *MCPServer) handleChat(ctx context.Context, req *mcp.CallToolRequest, input ChatInput) (*mcp.CallToolResult, any, error) {
 	s.log.Info("==================================================")
-	s.log.Info("📥 NEW REQUEST: MCP gemini_chat")
+	s.log.Info("📥 NEW REQUEST: MCP ask_gemini")
 	if s.cfg.Gemini.LogRawRequests {
 		reqBytes, _ := json.MarshalIndent(input, "", "  ")
 		s.log.Info(fmt.Sprintf("Request Payload:\n%s", string(reqBytes)))
@@ -128,7 +137,7 @@ func (s *MCPServer) handleChat(ctx context.Context, req *mcp.CallToolRequest, in
 		}, nil, nil
 	}
 
-	s.log.Info("📤 RETURN TO CLIENT: MCP gemini_chat Result Sent")
+	s.log.Info("📤 RETURN TO CLIENT: MCP ask_gemini Result Sent")
 	s.log.Info("==================================================")
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: res.Candidates[0].Content.Parts[0].Text}},
@@ -137,7 +146,7 @@ func (s *MCPServer) handleChat(ctx context.Context, req *mcp.CallToolRequest, in
 
 func (s *MCPServer) handleCodeExpert(ctx context.Context, req *mcp.CallToolRequest, input CodeExpertInput) (*mcp.CallToolResult, any, error) {
 	s.log.Info("==================================================")
-	s.log.Info("📥 NEW REQUEST: MCP gemini_code_expert")
+	s.log.Info("📥 NEW REQUEST: MCP coding_expert")
 	if s.cfg.Gemini.LogRawRequests {
 		reqBytes, _ := json.MarshalIndent(input, "", "  ")
 		s.log.Info(fmt.Sprintf("Request Payload:\n%s", string(reqBytes)))
@@ -168,7 +177,7 @@ func (s *MCPServer) handleCodeExpert(ctx context.Context, req *mcp.CallToolReque
 		}, nil, nil
 	}
 
-	s.log.Info("📤 RETURN TO CLIENT: MCP gemini_code_expert Result Sent")
+	s.log.Info("📤 RETURN TO CLIENT: MCP coding_expert Result Sent")
 	s.log.Info("==================================================")
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: res.Candidates[0].Content.Parts[0].Text}},
@@ -177,7 +186,7 @@ func (s *MCPServer) handleCodeExpert(ctx context.Context, req *mcp.CallToolReque
 
 func (s *MCPServer) handleResearch(ctx context.Context, req *mcp.CallToolRequest, input ResearchInput) (*mcp.CallToolResult, any, error) {
 	s.log.Info("==================================================")
-	s.log.Info("📥 NEW REQUEST: MCP gemini_research")
+	s.log.Info("📥 NEW REQUEST: MCP google_search")
 	if s.cfg.Gemini.LogRawRequests {
 		reqBytes, _ := json.MarshalIndent(input, "", "  ")
 		s.log.Info(fmt.Sprintf("Request Payload:\n%s", string(reqBytes)))
@@ -191,7 +200,10 @@ func (s *MCPServer) handleResearch(ctx context.Context, req *mcp.CallToolRequest
 	}
 
 	res, err := s.gemini.DeepResearch(ctx, dto.DeepResearchRequest{
-		Query: input.Query,
+		Query:      input.Query,
+		Model:      input.Model,
+		Language:   input.Language,
+		MaxSources: input.MaxSources,
 	})
 
 	if err != nil {
@@ -206,7 +218,7 @@ func (s *MCPServer) handleResearch(ctx context.Context, req *mcp.CallToolRequest
 		summary += fmt.Sprintf("- [%s](%s)\n", src.Title, src.URL)
 	}
 
-	s.log.Info("📤 RETURN TO CLIENT: MCP gemini_research Result Sent")
+	s.log.Info("📤 RETURN TO CLIENT: MCP google_search Result Sent")
 	s.log.Info("==================================================")
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: summary}},
@@ -222,6 +234,20 @@ func (s *MCPServer) handleAccountStatus(ctx context.Context, req *mcp.CallToolRe
 	s.log.Info("==================================================")
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: string(data)}},
+	}, nil, nil
+}
+
+func (s *MCPServer) handleDiscoverGuests(ctx context.Context, req *mcp.CallToolRequest, input struct{}) (*mcp.CallToolResult, any, error) {
+	s.log.Info("==================================================")
+	s.log.Info("📥 NEW REQUEST: MCP discover_guests")
+	
+	// Use background context as discovery might take time
+	go s.gemini.Client().GetDiscoverySvc().DiscoverNewPlatforms(context.Background())
+
+	s.log.Info("📤 RETURN TO CLIENT: MCP discover_guests Initiated")
+	s.log.Info("==================================================")
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: "Discovery process initiated in the background. Check admin panel for results."}},
 	}, nil, nil
 }
 
@@ -278,8 +304,8 @@ func (s *MCPServer) HandleOneShotRequest(ctx context.Context, body []byte) (inte
 					"logging": map[string]interface{}{},
 				},
 				"serverInfo": map[string]interface{}{
-					"name":    "gemini-web-multi-mcp",
-					"version": "1.0.0",
+					"name":    "gemini-web-multi",
+					"version": "1.1.0",
 				},
 			},
 		}, nil
@@ -312,20 +338,22 @@ func (s *MCPServer) HandleOneShotRequest(ctx context.Context, body []byte) (inte
 		var err error
 
 		switch params.Name {
-		case "gemini_chat":
+		case "ask_gemini":
 			var input ChatInput
 			json.Unmarshal(params.Arguments, &input)
 			res, _, err = s.handleChat(ctx, nil, input)
-		case "gemini_code_expert":
+		case "coding_expert":
 			var input CodeExpertInput
 			json.Unmarshal(params.Arguments, &input)
 			res, _, err = s.handleCodeExpert(ctx, nil, input)
-		case "gemini_research":
+		case "google_search":
 			var input ResearchInput
 			json.Unmarshal(params.Arguments, &input)
 			res, _, err = s.handleResearch(ctx, nil, input)
 		case "account_status":
 			res, _, err = s.handleAccountStatus(ctx, nil, struct{}{})
+		case "discover_guests":
+			res, _, err = s.handleDiscoverGuests(ctx, nil, struct{}{})
 		default:
 			err = fmt.Errorf("tool not found: %s", params.Name)
 		}
@@ -367,34 +395,40 @@ func (s *MCPServer) HandleOneShotRequest(ctx context.Context, body []byte) (inte
 func (s *MCPServer) getStaticTools() []map[string]interface{} {
 	return []map[string]interface{}{
 		{
-			"name":        "gemini_chat",
-			"description": "General purpose chat with Gemini",
+			"name":        "ask_gemini",
+			"description": "General purpose chat with Gemini accounts. Supports long context and reasoning.",
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"message": map[string]interface{}{"type": "string"},
+					"message": map[string]interface{}{"type": "string", "description": "The message to send to Gemini"},
+					"model":   map[string]interface{}{"type": "string", "description": "Optional model ID (e.g., gemini-2.0-flash)"},
 				},
 				"required": []string{"message"},
 			},
 		},
 		{
-			"name":        "gemini_code_expert",
-			"description": "Specialized coding assistant",
+			"name":        "coding_expert",
+			"description": "Specialized coding assistant with full context support.",
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"message": map[string]interface{}{"type": "string"},
+					"message":  map[string]interface{}{"type": "string", "description": "The coding task description"},
+					"code":     map[string]interface{}{"type": "string", "description": "The source code context"},
+					"language": map[string]interface{}{"type": "string", "description": "Programming language"},
 				},
 				"required": []string{"message"},
 			},
 		},
 		{
-			"name":        "gemini_research",
-			"description": "Deep research tool",
+			"name":        "google_search",
+			"description": "Performs deep web research using Google. Returns cited sources.",
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"query": map[string]interface{}{"type": "string"},
+					"query":       map[string]interface{}{"type": "string", "description": "The search query or topic"},
+					"model":       map[string]interface{}{"type": "string", "description": "Optional model to use"},
+					"language":    map[string]interface{}{"type": "string", "description": "Search language"},
+					"max_sources": map[string]interface{}{"type": "integer", "description": "Max sources to crawl"},
 				},
 				"required": []string{"query"},
 			},
@@ -402,6 +436,13 @@ func (s *MCPServer) getStaticTools() []map[string]interface{} {
 		{
 			"name":        "account_status",
 			"description": "Gemini account health tracking",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+			},
+		},
+		{
+			"name":        "discover_guests",
+			"description": "Trigger discovery of new guest chat platforms",
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 			},

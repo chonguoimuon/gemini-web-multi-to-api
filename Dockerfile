@@ -19,8 +19,20 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o main ./cmd/server/main
 # Stage 2: Final Image
 FROM alpine:3.22.2
 
-# Install required packages
-RUN apk add --no-cache ca-certificates tzdata
+# Install required packages (including Chromium for Anti-Bot clearance)
+RUN apk add --no-cache \
+    ca-certificates \
+    tzdata \
+    chromium \
+    nss \
+    freetype \
+    harfbuzz \
+    ttf-freefont \
+    libstdc++ \
+    dbus \
+    libdrm \
+    mesa-gbm \
+    tini
 
 # Create a non-root user and group
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
@@ -37,4 +49,4 @@ EXPOSE 4982
 
 ENV GOLOG_LOG_LEVEL=info
 
-ENTRYPOINT ["./main"] 
+ENTRYPOINT ["/sbin/tini", "--", "./main"]

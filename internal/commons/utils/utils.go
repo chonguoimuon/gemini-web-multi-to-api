@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -13,17 +14,24 @@ import (
 	"go.uber.org/zap"
 )
 
+// JSONCandidate holds an extracted JSON block and its metadata
+type JSONCandidate struct {
+	RawPayload string
+	StartIndex int
+	EndIndex   int
+}
+
 // BuildPromptFromMessages constructs a unified prompt from messages
 func BuildPromptFromMessages(messages []models.Message, systemPrompt string) string {
 	var promptBuilder strings.Builder
 
 	if systemPrompt != "" {
-		promptBuilder.WriteString(fmt.Sprintf("System: %s\n\n", systemPrompt))
+		promptBuilder.WriteString(fmt.Sprintf("%s\n\n", systemPrompt))
 	}
 
 	for _, msg := range messages {
 		if strings.EqualFold(msg.Role, "system") {
-			promptBuilder.WriteString(fmt.Sprintf("System: %s\n", msg.Content))
+			promptBuilder.WriteString(fmt.Sprintf("%s\n\n", msg.Content))
 			continue
 		}
 
@@ -90,6 +98,15 @@ func MarshalJSONSafely(log *zap.Logger, v interface{}) []byte {
 		return []byte("{}")
 	}
 	return data
+}
+
+// RawWrite writes raw bytes to the stream writer and flushes it
+func RawWrite(w *bufio.Writer, log *zap.Logger, data []byte) error {
+	if _, err := w.Write(data); err != nil {
+		log.Error("Failed to write raw bytes", zap.Error(err))
+		return err
+	}
+	return w.Flush()
 }
 
 // SendStreamChunk writes a JSON chunk to the stream writer with error handling
@@ -174,75 +191,20 @@ func ErrorToResponse(err error, errorType string) models.ErrorResponse {
 	}
 }
 
-// CleanJSONBlock extracts valid JSON from Markdown blocks (e.g., ```json ... ```).
-// It safely handles conversational filler before or after the JSON.
+// CleanJSONBlock extracts the single best valid JSON block from text.
 func CleanJSONBlock(text string) string {
-	// 1. Look for explicitly marked JSON code blocks
-	startIdx := strings.Index(text, "```json")
-	if startIdx != -1 {
-		codeStart := startIdx + len("```json")
-		endIdx := strings.LastIndex(text, "```")
-		if endIdx != -1 && endIdx > codeStart {
-			candidate := strings.TrimSpace(text[codeStart:endIdx])
-			// Fast-track if valid
-			var m interface{}
-			if json.Unmarshal([]byte(candidate), &m) == nil {
-				return candidate
-			}
-			// Attempt to recover if malformed (brute force closing braces)
-			if recovered := recoverJSON(candidate); recovered != "" {
-				return recovered
-			}
-			return candidate
-		}
+	blocks, _ := ExtractAllJSONBlocks(text)
+	if len(blocks) > 0 {
+		return blocks[0]
 	}
 
 	trimmed := strings.TrimSpace(text)
-	
-	// 2. Fallback: Extract aggressive JSON block if it prominently contains "tool_calls" or looks like an object
 	if strings.Contains(trimmed, "\"tool_calls\"") || strings.Contains(trimmed, "\"function\"") || strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
-		searchStart := 0
-		if tcIdx := strings.Index(trimmed, "\"tool_calls\""); tcIdx != -1 {
-			// Find the opening brace BEFORE "tool_calls"
-			if lastOpen := strings.LastIndex(trimmed[:tcIdx], "{"); lastOpen != -1 {
-				searchStart = lastOpen
-			}
-		} else if fnIdx := strings.Index(trimmed, "\"function\""); fnIdx != -1 {
-			// Find the opening brace BEFORE "function"
-			if lastOpen := strings.LastIndex(trimmed[:fnIdx], "{"); lastOpen != -1 {
-				searchStart = lastOpen
-			}
-		} else {
-			// Just find the first brace or bracket
-			firstBrace := strings.Index(trimmed, "{")
-			firstBracket := strings.Index(trimmed, "[")
-			if firstBrace != -1 && (firstBracket == -1 || firstBrace < firstBracket) {
-				searchStart = firstBrace
-			} else if firstBracket != -1 {
-				searchStart = firstBracket
-			}
-		}
-
-		if recovered := recoverJSON(trimmed[searchStart:]); recovered != "" {
+		if recovered := recoverJSON(trimmed); recovered != "" {
 			return recovered
 		}
-		
-		// Simple fallback to last brace/bracket if recovery failed
-		lastBrace := strings.LastIndex(trimmed, "}")
-		lastBracket := strings.LastIndex(trimmed, "]")
-		endIdx := -1
-		if lastBrace != -1 && (lastBracket == -1 || lastBrace > lastBracket) {
-			endIdx = lastBrace
-		} else if lastBracket != -1 {
-			endIdx = lastBracket
-		}
-
-		if endIdx > searchStart {
-			return strings.TrimSpace(trimmed[searchStart : endIdx+1])
-		}
 	}
-
-	// 3. Fallback: Clean up plain backticks if the text starts with them
+	
 	if strings.HasPrefix(trimmed, "```") {
 		trimmed = strings.TrimPrefix(trimmed, "```")
 		trimmed = strings.TrimSuffix(trimmed, "```")
@@ -252,14 +214,174 @@ func CleanJSONBlock(text string) string {
 	return trimmed
 }
 
+var (
+	// jsonBlockRegex matches anything that looks like a JSON block containing tool call keywords
+	jsonBlockRegex = regexp.MustCompile(`(?s)\{.*?"(?:tool_calls|function|function_call)".*?\}`)
+	// Heuristic regexes for reassembly
+	hNameRegex    = regexp.MustCompile(`(?i)"name"\s*:\s*"([^"]+)"`)
+	hIdRegex      = regexp.MustCompile(`(?i)"id"\s*:\s*"([^"]+)"`)
+	hPathRegex    = regexp.MustCompile(`(?i)"path"\s*:\s*"([^"]+)"`)
+	hCommandRegex = regexp.MustCompile(`(?i)"command"\s*:\s*"([^"]+)"`)
+	hTodoRegex    = regexp.MustCompile(`(?s)\{\s*"status"\s*:\s*"([^"]+)"\s*,\s*"task"\s*:\s*"([^"]+)"\s*\}`)
+	// Content is greedier: find everything between "content": " and the next key or the end of the block
+	hContentRegex = regexp.MustCompile(`(?s)"content"\s*:\s*"(.*)"`)
+)
+
+// ExtractAllJSONBlocks finds all JSON blocks and returns (parsedBlocks, sourceSegments).
+func ExtractAllJSONBlocks(text string) ([]string, []string) {
+	var parsedBlocks []string
+	var sourceSegments []string
+
+	// 1. First, extract all markdown blocks ```json ... ``` (Highest priority)
+	remaining := text
+	for {
+		startIdx := strings.Index(remaining, "```json")
+		if startIdx == -1 {
+			break
+		}
+		markerLen := len("```json")
+		contentStart := startIdx + markerLen
+		endIdx := strings.Index(remaining[contentStart:], "```")
+		if endIdx == -1 {
+			candidate := strings.TrimSpace(remaining[contentStart:])
+			fullSource := remaining[startIdx:]
+			if recovered := recoverJSON(candidate); recovered != "" {
+				parsedBlocks = append(parsedBlocks, recovered)
+				sourceSegments = append(sourceSegments, fullSource)
+			}
+			break
+		}
+		fullEndIdx := contentStart + endIdx
+		candidate := strings.TrimSpace(remaining[contentStart:fullEndIdx])
+		parsedBlocks = append(parsedBlocks, candidate)
+		sourceSegments = append(sourceSegments, remaining[startIdx:fullEndIdx+3])
+		remaining = remaining[fullEndIdx+3:]
+	}
+
+	// 2. Use "Nuclear" Regex extraction for raw JSON if no markdown found
+	if len(parsedBlocks) == 0 {
+		normalizedText := NormalizeJSON(text)
+		matches := jsonBlockRegex.FindAllStringIndex(normalizedText, -1)
+		for _, match := range matches {
+			rawCandidate := text[match[0]:match[1]]
+			if recovered := recoverJSON(rawCandidate); recovered != "" {
+				parsedBlocks = append(parsedBlocks, recovered)
+				sourceSegments = append(sourceSegments, rawCandidate)
+			}
+		}
+	}
+
+	// 3. HEURISTIC REASSEMBLY (V9): Search for Skeleton Actions
+	toolNames := []string{"write_to_file", "update_todo_list", "execute_command", "replace_file_content"}
+	normalizedText := NormalizeJSON(text)
+	
+	for _, toolName := range toolNames {
+		if strings.Contains(normalizedText, toolName) {
+			nameIndices := regexp.MustCompile(fmt.Sprintf(`(?i)%s`, toolName)).FindAllStringIndex(normalizedText, -1)
+			for _, idx := range nameIndices {
+				start := idx[0] - 500
+				if start < 0 { start = 0 }
+				end := idx[1] + 3000
+				if end > len(normalizedText) { end = len(normalizedText) }
+				window := normalizedText[start:end]
+				rawWindow := text[start:end]
+				
+				matchId := hIdRegex.FindStringSubmatch(window)
+				matchPath := hPathRegex.FindStringSubmatch(window)
+				matchCommand := hCommandRegex.FindStringSubmatch(window)
+				id := "call_" + toolName
+				if len(matchId) > 1 { id = matchId[1] }
+				
+				content := ""
+				if toolName == "write_to_file" || toolName == "replace_file_content" {
+					contentStartIdx := strings.Index(window, "\"content\": \"")
+					if contentStartIdx != -1 {
+						valStart := contentStartIdx + len("\"content\": \"")
+						bestDecoded := ""
+						rawValInWindow := window[valStart:]
+						for i := 0; i < len(rawValInWindow); i++ {
+							if rawValInWindow[i] == '"' {
+								candidate := rawValInWindow[:i]
+								var decoded string
+								if err := json.Unmarshal([]byte("\"" + candidate + "\""), &decoded); err == nil {
+									if len(decoded) > len(bestDecoded) {
+										bestDecoded = decoded
+									}
+								}
+							}
+						}
+						content = bestDecoded
+					}
+				}
+
+				var params string
+				if toolName == "write_to_file" && len(matchPath) > 1 {
+					pathJson, _ := json.Marshal(matchPath[1])
+					// V11: Strip Markdown Links from content
+					cleanContent := StripMarkdownLink(content)
+					contentJson, _ := json.Marshal(cleanContent)
+					params = fmt.Sprintf(`{"path": %s, "content": %s}`, string(pathJson), string(contentJson))
+				} else if toolName == "execute_command" && len(matchCommand) > 1 {
+					// V11: Strip Markdown Links from command
+					cleanCmd := StripMarkdownLink(matchCommand[1])
+					cmdJson, _ := json.Marshal(cleanCmd)
+					params = fmt.Sprintf(`{"command": %s}`, string(cmdJson))
+				} else if toolName == "update_todo_list" {
+					todoMatches := hTodoRegex.FindAllStringSubmatch(window, -1)
+					if len(todoMatches) > 0 {
+						var items []string
+						for _, m := range todoMatches {
+							sJ, _ := json.Marshal(m[1]); tJ, _ := json.Marshal(m[2])
+							items = append(items, fmt.Sprintf(`{"status": %s, "task": %s}`, string(sJ), string(tJ)))
+						}
+						params = fmt.Sprintf(`{"todos": [%s]}`, strings.Join(items, ","))
+					}
+				}
+				
+				if params != "" {
+					cId, _ := json.Marshal(id); cName, _ := json.Marshal(toolName)
+					reassembled := fmt.Sprintf(`{"id": %s, "type": "function", "function": {"name": %s, "parameters": %s}}`, string(cId), string(cName), params)
+					
+					alreadyCovered := false
+					for _, s := range sourceSegments {
+						if strings.Contains(s, rawWindow) || strings.Contains(rawWindow, s) {
+							alreadyCovered = true
+							break
+						}
+					}
+					if !alreadyCovered {
+						parsedBlocks = append(parsedBlocks, reassembled)
+						sourceSegments = append(sourceSegments, rawWindow)
+					}
+				}
+			}
+		}
+	}
+
+	// 4. Last fallback
+	if len(parsedBlocks) == 0 {
+		trimmed := strings.TrimSpace(text)
+		if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+			if recovered := recoverJSON(trimmed); recovered != "" {
+				parsedBlocks = append(parsedBlocks, recovered)
+				sourceSegments = append(sourceSegments, trimmed)
+			}
+		}
+	}
+
+	return parsedBlocks, sourceSegments
+}
+
 // recoverJSON attempts to find the largest valid JSON object by trying different closing positions.
-// This is crucial for handling Gemini's occasional extra braces like }}}} at the end.
+// It uses tentative normalization to detect "broken" JSON blocks.
 func recoverJSON(s string) string {
 	// Try finding largest valid JSON object {}
 	for last := strings.LastIndex(s, "}"); last != -1; last = strings.LastIndex(s[:last], "}") {
 		candidate := s[:last+1]
 		var m interface{}
-		if json.Unmarshal([]byte(candidate), &m) == nil {
+		// Use tentative normalization for validation
+		normalized := NormalizeJSON(candidate)
+		if json.Unmarshal([]byte(normalized), &m) == nil {
 			return candidate
 		}
 	}
@@ -267,17 +389,50 @@ func recoverJSON(s string) string {
 	for last := strings.LastIndex(s, "]"); last != -1; last = strings.LastIndex(s[:last], "]") {
 		candidate := s[:last+1]
 		var m interface{}
-		if json.Unmarshal([]byte(candidate), &m) == nil {
+		normalized := NormalizeJSON(candidate)
+		if json.Unmarshal([]byte(normalized), &m) == nil {
 			return candidate
 		}
 	}
 	return ""
 }
 
-// NormalizeJSON cleans up AI-over-escaped characters like \_ that break JSON parsing.
+var (
+	// unescapeRegex matches a backslash followed by any character.
+	unescapeRegex = regexp.MustCompile(`\\(.)`)
+	// legalJSONEscapes contains characters that are ALREADY part of standard JSON escapes.
+	// We MUST NOT strip the backslash before these.
+	legalJSONEscapes = "nrbtfu\\/\""
+)
+
+// NormalizeJSON cleans up AI-over-escaped characters that break JSON parsing.
 func NormalizeJSON(jsonStr string) string {
-	// Remove common over-escaped underscores
-	return strings.ReplaceAll(jsonStr, "\\_", "_")
+	if jsonStr == "" {
+		return jsonStr
+	}
+
+	// Gemini Web frequently "escapes" characters for Markdown safety (e.g., \_, \\_).
+	
+	// 1. First, handle the most common double-escaped keys like \\_
+	// This appears frequently in Gemini Web's "raw" output.
+	jsonStr = strings.ReplaceAll(jsonStr, "\\\\_", "_")
+
+	// 2. Use Regex for any other single-escaped illegal characters
+	result := unescapeRegex.ReplaceAllStringFunc(jsonStr, func(match string) string {
+		if len(match) < 2 {
+			return match
+		}
+		char := match[1:2]
+		// If the second character is a standard JSON escape char, keep the backslash
+		// Legal escapes according to RFC 8259 are: " \ / b f n r t uXXXX
+		if strings.ContainsAny(char, legalJSONEscapes) {
+			return match
+		}
+		// Otherwise, it's an illegal escape for JSON (like \_ or \. or \<), strip it
+		return char
+	})
+
+	return result
 }
 
 // TruncateString truncates a string to the specified length and adds ... if it exceeds it.
@@ -288,86 +443,44 @@ func TruncateString(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-// StripMarkdownLink extracts the URL from a markdown link format like [label](url).
-// It also handles common Gemini patterns like "label (url)" or "(url)" trailing text.
+var mdLinkRegex = regexp.MustCompile(`\[([^\]]+)\]\((https?://[^\)]+)\)`)
+
+// StripMarkdownLink removes markdown-style links [Label](URL) and returns only the Label.
 func StripMarkdownLink(text string) string {
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
+	if text == "" {
 		return text
 	}
+	// 1. Replace all global [Label](URL) with just Label
+	// Gemini Web frequently wraps domains/packages in links.
+	cleaned := mdLinkRegex.ReplaceAllString(text, "$1")
 
-	// 1. Handle [label](url)
-	if strings.HasPrefix(trimmed, "[") {
-		bracketEnd := strings.Index(trimmed, "](")
-		if bracketEnd != -1 {
-			parenEnd := strings.LastIndex(trimmed, ")")
-			if parenEnd != -1 && parenEnd > bracketEnd+2 {
-				url := trimmed[bracketEnd+2 : parenEnd]
-				return strings.TrimSpace(url)
-			}
-		}
-	}
+	// 2. Extra cleaning: remove bracketed URLs if trailing: "command (http://...)"
+	parenUrlRegex := regexp.MustCompile(`\s*\(\s*https?://[^\s\)]+\s*\)`)
+	cleaned = parenUrlRegex.ReplaceAllString(cleaned, "")
 
-	// 2. Handle redundant URL in parenthesis at the end of a string: "some command (https://url.com)"
-	// This frequently breaks shell commands if left in.
-	if strings.HasSuffix(trimmed, ")") {
-		lastLParen := strings.LastIndex(trimmed, "(")
-		if lastLParen != -1 && lastLParen < len(trimmed)-1 {
-			content := trimmed[lastLParen+1 : len(trimmed)-1]
-			content = strings.TrimSpace(content)
-			
-			// Detect if the parenthetical content is an absolute URL
-			if strings.HasPrefix(content, "http://") || strings.HasPrefix(content, "https://") {
-				// Strip the URL and the parenthesis, along with any preceding space
-				prefix := strings.TrimSpace(trimmed[:lastLParen])
-				if prefix != "" {
-					return prefix
-				}
-				return content // return just the URL if there's no prefix
-			}
-		}
-	}
-
-	return text
+	return strings.TrimSpace(cleaned)
 }
 
 // ExtractContextText removes the code blocks or raw JSON payload from the text to preserve the surrounding narrative context.
-func ExtractContextText(text, jsonPayload string) string {
+func ExtractContextText(text string, sourceSegments []string) string {
 	cleaned := text
 
-	// 1. Remove all ```json ... ``` blocks
-	for {
-		startIdx := strings.Index(cleaned, "```json")
-		if startIdx == -1 {
-			break
-		}
-		
-		endIdx := strings.Index(cleaned[startIdx+7:], "```")
-		if endIdx == -1 {
-			// Unclosed block, just remove the marker and continue
-			cleaned = cleaned[:startIdx] + cleaned[startIdx+7:]
-			continue
-		}
-		
-		fullBlockEnd := startIdx + 7 + endIdx + 3
-		before := strings.TrimSpace(cleaned[:startIdx])
-		after := strings.TrimSpace(cleaned[fullBlockEnd:])
-		
-		if before != "" && after != "" {
-			cleaned = before + "\n\n" + after
-		} else {
-			cleaned = before + after
+	// 1. Remove all successfully identified original segments (including heuristic windows)
+	for _, segment := range sourceSegments {
+		if segment != "" && strings.Contains(cleaned, segment) {
+			cleaned = strings.Replace(cleaned, segment, "", 1)
 		}
 	}
 
-	// 2. If jsonPayload is provided and it exists in the raw text, remove it!
-	// This handles cases where Gemini omits the ```json markdown wrapper.
-	if jsonPayload != "" && strings.Contains(cleaned, jsonPayload) {
-		// Only remove if it's large enough to be a likely JSON block, 
-		// or if it's the dominant part of the text.
-		cleaned = strings.Replace(cleaned, jsonPayload, "", 1)
-		cleaned = strings.TrimSpace(cleaned)
-	}
+	// 2. Extra cleaning: remove markdown markers if left behind
+	cleaned = strings.ReplaceAll(cleaned, "```json", "")
+	cleaned = strings.ReplaceAll(cleaned, "```", "")
 
-	return cleaned
+	return strings.TrimSpace(cleaned)
+}
+
+// HasMarkdownLink checks if the string contains any Markdown-formatted links [label](url)
+func HasMarkdownLink(s string) bool {
+	re := regexp.MustCompile(`\[.*?\]\(.*?\)`)
+	return re.MatchString(s)
 }

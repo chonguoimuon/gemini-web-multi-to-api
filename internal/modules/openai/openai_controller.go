@@ -195,6 +195,20 @@ func (h *OpenAIController) HandleChatCompletions(c fiber.Ctx) error {
 	return c.JSON(response)
 }
 
+
+// HandleResponses is an alias for HandleChatCompletions required by some external tools
+// @Summary Chat Responses (OpenAI Alias)
+// @Description Alias for chat completions for specific external integration requirements
+// @Tags OpenAI
+// @Accept json
+// @Produce json
+// @Param request body dto.ChatCompletionRequest true "Chat Completion Request"
+// @Success 200 {object} dto.ChatCompletionResponse
+// @Router /openai/v1/responses [post]
+func (h *OpenAIController) HandleResponses(c fiber.Ctx) error {
+	return h.HandleChatCompletions(c)
+}
+
 func (h *OpenAIController) convertToOpenAIFormat(response *providers.Response, model string) dto.ChatCompletionResponse {
 	return dto.ChatCompletionResponse{
 		ID:      fmt.Sprintf("chatcmpl-%d", time.Now().Unix()),
@@ -223,6 +237,7 @@ func (h *OpenAIController) convertToOpenAIFormat(response *providers.Response, m
 func (c *OpenAIController) Register(group fiber.Router) {
 	group.Get("/models", c.HandleModels)
 	group.Post("/chat/completions", c.HandleChatCompletions)
+	group.Post("/responses", c.HandleResponses)
 	group.Post("/images/generations", c.HandleImageGenerations)
 }
 

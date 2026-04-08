@@ -159,6 +159,10 @@ func (h *GeminiController) HandleV1BetaStreamGenerateContent(c fiber.Ctx) error 
 	c.Set("Transfer-Encoding", "chunked")
 
 	c.RequestCtx().SetBodyStreamWriter(func(w *bufio.Writer) {
+		// 1. SEND INITIAL HEADER IMMEDIATELY to prevent client timeout and keep the connection alive!
+		// This tells the tool (like Roo Code) that the response HAS started.
+		_ = common.RawWrite(w, h.log, []byte("["))
+
 		// Add timeout to context inside stream writer
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
@@ -172,7 +176,9 @@ func (h *GeminiController) HandleV1BetaStreamGenerateContent(c fiber.Ctx) error 
 			} else {
 				errResponse = common.ErrorToResponse(err, "api_error")
 			}
-			_ = common.SendStreamChunk(w, h.log, errResponse)
+			data := common.MarshalJSONSafely(h.log, errResponse)
+			_ = common.RawWrite(w, h.log, data)
+			_ = common.RawWrite(w, h.log, []byte("]")) // Close the array on error too
 			return
 		}
 
@@ -182,7 +188,7 @@ func (h *GeminiController) HandleV1BetaStreamGenerateContent(c fiber.Ctx) error 
 			text = resp.Candidates[0].Content.Parts[0].Text
 		}
 
-		chunks := common.SplitResponseIntoChunks(text, 30)
+		chunks := common.SplitResponseIntoChunks(text, 10) // Faster delay for better UX
 		for i, content := range chunks {
 			chunk := dto.GeminiGenerateResponse{
 				Candidates: []dto.Candidate{
@@ -196,13 +202,19 @@ func (h *GeminiController) HandleV1BetaStreamGenerateContent(c fiber.Ctx) error 
 				},
 			}
 
-			if err := common.SendStreamChunk(w, h.log, chunk); err != nil {
+			// Add comma between elements in the JSON array
+			if i > 0 {
+				_ = common.RawWrite(w, h.log, []byte(","))
+			}
+
+			data := common.MarshalJSONSafely(h.log, chunk)
+			if err := common.RawWrite(w, h.log, data); err != nil {
 				h.log.Error("Failed to send stream chunk", zap.Error(err), zap.Int("chunk_index", i))
 				return
 			}
 
 			// Check for context cancellation and sleep
-			if !common.SleepWithCancel(ctx, 30*time.Millisecond) {
+			if !common.SleepWithCancel(ctx, 10*time.Millisecond) {
 				h.log.Info("Stream cancelled by client")
 				return
 			}
@@ -217,7 +229,14 @@ func (h *GeminiController) HandleV1BetaStreamGenerateContent(c fiber.Ctx) error 
 				},
 			},
 		}
-		_ = common.SendStreamChunk(w, h.log, finalChunk)
+		if len(chunks) > 0 {
+			_ = common.RawWrite(w, h.log, []byte(","))
+		}
+		dataFinal := common.MarshalJSONSafely(h.log, finalChunk)
+		_ = common.RawWrite(w, h.log, dataFinal)
+		
+		// 3. CLOSE THE ARRAY
+		_ = common.RawWrite(w, h.log, []byte("]"))
 	})
 
 	return nil

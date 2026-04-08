@@ -36,7 +36,9 @@ type GeminiConfig struct {
 	MaxRetries      int
 	Cookies         string
 	LogRawRequests  bool
-	AutoDeleteChat  bool
+	AutoDeleteChat       bool
+	OracleAPIKeys        string
+	GuestRefreshInterval int
 }
 
 type ClaudeConfig struct {
@@ -93,6 +95,8 @@ func New() (*Config, error) {
 	cfg.Gemini.MaxRetries = getEnvInt("GEMINI_MAX_RETRIES", defaultGeminiMaxRetries)
 	cfg.Gemini.LogRawRequests = getEnvBool("LOG_RAW_REQUESTS", true)
 	cfg.Gemini.AutoDeleteChat = getEnvBool("AUTO_DELETE_CHAT", false)
+	cfg.Gemini.OracleAPIKeys = os.Getenv("GEMINI_PRO_API_KEYS")
+	cfg.Gemini.GuestRefreshInterval = getEnvInt("GEMINI_GUEST_REFRESH_INTERVAL_HOURS", 24)
 
 	// Validate configuration
 	if err := cfg.Validate(); err != nil {

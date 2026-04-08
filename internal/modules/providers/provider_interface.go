@@ -95,6 +95,7 @@ type GenerateConfig struct {
 	Files       []string
 	Temperature float64
 	MaxTokens   int
+	OnProgress  func()
 }
 
 // ChatOption configures chat session behavior
@@ -117,6 +118,13 @@ func WithModel(model string) GenerateOption {
 func WithFiles(files []string) GenerateOption {
 	return func(c *GenerateConfig) {
 		c.Files = files
+	}
+}
+
+// WithProgress sets a progress callback
+func WithProgress(callback func()) GenerateOption {
+	return func(c *GenerateConfig) {
+		c.OnProgress = callback
 	}
 }
 

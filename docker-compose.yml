@@ -15,6 +15,13 @@ services:
       - GEMINI_REFRESH_INTERVAL=30
       - GEMINI_MAX_RETRIES=3
     restart: unless-stopped
+    shm_size: 512mb
+    deploy:
+      resources:
+        limits:
+          memory: 1024M
+        reservations:
+          memory: 512M
     volumes:
       - ./data:/home/appuser/data
       - ./cookies:/home/appuser/.cookies

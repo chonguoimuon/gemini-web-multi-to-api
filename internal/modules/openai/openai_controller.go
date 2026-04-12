@@ -83,8 +83,8 @@ func (h *OpenAIController) HandleChatCompletions(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(utils.ErrorToResponse(fmt.Errorf("invalid request body: %w", err), "invalid_request_error"))
 	}
 
-	// Add timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	// Add generous timeout to allow for Gemini self-healing correction loops
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
 	response, err := h.service.CreateChatCompletion(ctx, req)
@@ -263,7 +263,7 @@ func (h *OpenAIController) HandleImageGenerations(c fiber.Ctx) error {
 		req.N = 1
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
 	response, err := h.service.CreateImageGeneration(ctx, req)

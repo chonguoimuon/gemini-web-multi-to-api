@@ -16,6 +16,9 @@ type Config struct {
 	RateLimit RateLimitConfig
 	MCP       MCPConfig
 	LogLevel  string
+	// RuntimeCfgMgr manages settings that are changed via Admin API and persisted to disk.
+	// Always access AutoDeleteChat / LogRawRequests through this manager or via cfg.Gemini.*
+	RuntimeCfgMgr *RuntimeConfigManager
 }
 
 type MCPConfig struct {
@@ -30,15 +33,19 @@ type RateLimitConfig struct {
 }
 
 type GeminiConfig struct {
-	Secure1PSID     string
-	Secure1PSIDTS   string
-	RefreshInterval int
-	MaxRetries      int
-	Cookies         string
-	LogRawRequests  bool
+	Secure1PSID          string
+	Secure1PSIDTS        string
+	RefreshInterval      int
+	MaxRetries           int
+	Cookies              string
+	LogRawRequests       bool
+	LogRawSendGemini     bool
+	LogRawGeminiOut      bool
+	LogRawPayloadOut     bool
 	AutoDeleteChat       bool
 	OracleAPIKeys        string
 	GuestRefreshInterval int
+	PackContext          int
 }
 
 type ClaudeConfig struct {
@@ -93,10 +100,18 @@ func New() (*Config, error) {
 	cfg.Gemini.Cookies = os.Getenv("GEMINI_COOKIES")
 	cfg.Gemini.RefreshInterval = getEnvInt("GEMINI_REFRESH_INTERVAL", defaultGeminiRefreshInterval)
 	cfg.Gemini.MaxRetries = getEnvInt("GEMINI_MAX_RETRIES", defaultGeminiMaxRetries)
-	cfg.Gemini.LogRawRequests = getEnvBool("LOG_RAW_REQUESTS", true)
-	cfg.Gemini.AutoDeleteChat = getEnvBool("AUTO_DELETE_CHAT", false)
 	cfg.Gemini.OracleAPIKeys = os.Getenv("GEMINI_PRO_API_KEYS")
 	cfg.Gemini.GuestRefreshInterval = getEnvInt("GEMINI_GUEST_REFRESH_INTERVAL_HOURS", 24)
+	cfg.Gemini.PackContext = getEnvInt("GEMINI_PACK_CONTEXT", 32000)
+
+	// Runtime config (persisted to disk — NOT read from .env)
+	cfg.RuntimeCfgMgr = NewRuntimeConfigManager("data/runtime_config.json")
+	rc := cfg.RuntimeCfgMgr.Get()
+	cfg.Gemini.LogRawRequests = rc.LogRawRequests
+	cfg.Gemini.LogRawSendGemini = rc.LogRawSendGemini
+	cfg.Gemini.LogRawGeminiOut = rc.LogRawGeminiOut
+	cfg.Gemini.LogRawPayloadOut = rc.LogRawPayloadOut
+	cfg.Gemini.AutoDeleteChat = rc.AutoDeleteChat
 
 	// Validate configuration
 	if err := cfg.Validate(); err != nil {

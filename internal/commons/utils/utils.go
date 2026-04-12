@@ -157,6 +157,30 @@ func SendSSEEvent(w *bufio.Writer, log *zap.Logger, v interface{}) bool {
 }
 
 
+// SplitStringChunks splits a string into chunks of approximately chunkSize.
+// It uses rune slices to ensure multi-byte characters are not split in half.
+func SplitStringChunks(s string, chunkSize int) []string {
+	if chunkSize <= 0 {
+		return []string{s}
+	}
+	
+	runes := []rune(s)
+	total := len(runes)
+	if total <= chunkSize {
+		return []string{s}
+	}
+	
+	var chunks []string
+	for i := 0; i < total; i += chunkSize {
+		end := i + chunkSize
+		if end > total {
+			end = total
+		}
+		chunks = append(chunks, string(runes[i:end]))
+	}
+	return chunks
+}
+
 // SplitResponseIntoChunks simulates streaming by splitting response into chunks
 func SplitResponseIntoChunks(text string, delayMs int) []string {
 	words := strings.Split(text, " ")
@@ -215,8 +239,9 @@ func CleanJSONBlock(text string) string {
 }
 
 var (
-	// jsonBlockRegex matches anything that looks like a JSON block containing tool call keywords
-	jsonBlockRegex = regexp.MustCompile(`(?s)\{.*?"(?:tool_calls|function|function_call)".*?\}`)
+	// jsonBlockRegex matches anything that looks like a JSON block containing tool call keywords.
+	// V18: Support both {} and [] blocks, and add "call_" as a keyword.
+	jsonBlockRegex = regexp.MustCompile(`(?s)(?:\{|\[).*?"(?:tool_calls|function|function_call|call_)".*?(?:\}|\])`)
 	// Heuristic regexes for reassembly
 	hNameRegex    = regexp.MustCompile(`(?i)"name"\s*:\s*"([^"]+)"`)
 	hIdRegex      = regexp.MustCompile(`(?i)"id"\s*:\s*"([^"]+)"`)
@@ -483,4 +508,25 @@ func ExtractContextText(text string, sourceSegments []string) string {
 func HasMarkdownLink(s string) bool {
 	re := regexp.MustCompile(`\[.*?\]\(.*?\)`)
 	return re.MatchString(s)
+}
+
+// ContainsJunkIndicators checks if the text contains Gemini Web frontend "junk" 
+// that should not be returned to an API client (e.g. interactive chips, canvas UI markers).
+func ContainsJunkIndicators(text string) bool {
+	junkMarkers := []string{
+		"immersive_entry_chips",
+		"chip_cloud",
+		"render_immersive",
+		"action_chips",
+		"immersive-view",
+		"button_chip",
+	}
+	
+	lower := strings.ToLower(text)
+	for _, marker := range junkMarkers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }

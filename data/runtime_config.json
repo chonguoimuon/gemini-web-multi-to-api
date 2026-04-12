@@ -1,0 +1,7 @@
+{
+  "auto_delete_chat": true,
+  "log_raw_requests": false,
+  "log_raw_send_gemini": false,
+  "log_raw_gemini_out": true,
+  "log_raw_payload_out": true
+}

@@ -15,9 +15,11 @@ import (
 type GuestWorker struct {
 	httpClient   *req.Client
 	log          *zap.Logger
-	mu           sync.RWMutex
+	mu           sync.Mutex
 	client       *Client // Reference back to client for Oracle/Learning
 	PlatformName string
+	InstanceID   string // Unique ID for logging parallel threads
+	busy         bool
 }
 
 func NewGuestWorker(cfg *configs.Config, log *zap.Logger, client *Client) *GuestWorker {
@@ -107,6 +109,7 @@ func (w *GuestWorker) GenerateContent(ctx context.Context, prompt string, option
 		healthy:    true,
 		at:         config.AtToken, // Use captured 'at' token from learning session
 		SchemaMgr:  &SchemaManager{schema: &config.GJSONPaths},
+		Client:     w.client,
 	}
 
 	finalOpts := options
@@ -168,6 +171,7 @@ func (w *GuestWorker) StartChat(options ...ChatOption) ChatSession {
 			healthy:    true,
 			at:         config.AtToken,
 			SchemaMgr:  &SchemaManager{schema: &schema},
+			Client:     w.client,
 		},
 		model: model,
 	}
@@ -179,6 +183,22 @@ func (w *GuestWorker) Close() error {
 
 func (w *GuestWorker) GetName() string {
 	return "gemini-guest"
+}
+
+func (w *GuestWorker) TryLock() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.busy {
+		return false
+	}
+	w.busy = true
+	return true
+}
+
+func (w *GuestWorker) Unlock() {
+	w.mu.Lock()
+	w.busy = false
+	w.mu.Unlock()
 }
 
 func (w *GuestWorker) IsHealthy() bool {

@@ -64,9 +64,14 @@ type Client struct {
 	healingMu         sync.Mutex
 	healingStatus     string
 	schemaMgr         *SchemaManager
+	deleteCfgMgr      *DeleteConfigManager
 	multiGuestMgr     *MultiGuestManager
 	guestWorkers      map[string]*GuestWorker // Map of platform name -> worker
+	guestPool         []*GuestWorker          // Parallel execution slots for the primary guest platform
+	guestCond         *sync.Cond              // signals when a guest worker becomes idle
 	discoverySvc      *DiscoveryService
+	isDiscoveringDelete bool
+	discoveryDeleteMu   sync.Mutex
 }
 
 func NewClient(cfg *configs.Config, log *zap.Logger) *Client {
@@ -80,13 +85,16 @@ func NewClient(cfg *configs.Config, log *zap.Logger) *Client {
 		workers:           []*Worker{},
 		accountsMap:       make(map[string]*AccountConfig),
 		schemaMgr:         NewSchemaManager(),
+		deleteCfgMgr:      NewDeleteConfigManager(),
 		multiGuestMgr:     NewMultiGuestManager(),
 		guestWorkers:      make(map[string]*GuestWorker),
+		guestPool:         []*GuestWorker{},
 		healingStatus:     "Hoạt động bình thường",
 		botClearQueue:     make(chan string, 100), // Buffer for up to 100 pending clears
 		highPriorityQueue: make(chan string, 10),  // High priority (Guest)
 	}
 	c.cond = sync.NewCond(&c.mu)
+	c.guestCond = sync.NewCond(&c.mu)
 
 	// Discovery Service
 	c.discoverySvc = NewDiscoveryService(cfg, log, c.multiGuestMgr, c)
@@ -117,11 +125,12 @@ func (c *Client) Init(ctx context.Context) error {
 
 	c.mu.Lock()
 	for _, acc := range c.accountsMap {
-		worker := NewWorker(c.cfg, c.log, acc.Secure1PSID, acc.Secure1PSIDTS)
+		worker := NewWorker(c.cfg, c.log, c, acc.Secure1PSID, acc.Secure1PSIDTS)
 		worker.AccountID = acc.ID
 		worker.OnSuccess = c.ReportSuccess
 		worker.OnError = c.ReportError
 		worker.SetSchemaManager(c.schemaMgr)
+		// worker.Client is now set inside NewWorker
 		// When a worker finishes, wake up all waiters in the queue
 		worker.OnRelease = func() {
 			c.cond.Broadcast()
@@ -147,10 +156,8 @@ func (c *Client) Init(ctx context.Context) error {
 	}
 	c.mu.Unlock()
 
-	// Initialize guest workers
-	for _, gw := range c.guestWorkers {
-		_ = gw.Init(ctx)
-	}
+	// Initialize guest pool (Shadowing auth workers)
+	c.EnsureGuestPoolScale(ctx)
 
 	go c.masterSync()
 
@@ -232,7 +239,7 @@ func (c *Client) AddAccount(id, psid, psidts string) {
 	}
 	c.accountsMap[id] = acc
 
-	worker := NewWorker(c.cfg, c.log, psid, psidts)
+	worker := NewWorker(c.cfg, c.log, c, psid, psidts)
 	worker.AccountID = id
 	worker.SetSchemaManager(c.schemaMgr)
 	worker.OnRelease = func() {
@@ -248,12 +255,54 @@ func (c *Client) AddAccount(id, psid, psidts string) {
 			acc.Status = StatusError
 		} else {
 			acc.Status = StatusHealthy
+			// Auto-scale guest pool to shadow the new account count
+			go c.EnsureGuestPoolScale(context.Background())
 		}
 		c.mu.Unlock()
 		c.cond.Broadcast()
 		c.SaveAccounts()
 	}()
 	c.SaveAccounts()
+}
+
+// EnsureGuestPoolScale maintains the number of guest parallel slots to match
+// the number of auth cookies (1-to-1 shadow) with a minimum of 10 slots.
+// All slots point to the primary 'gemini' platform.
+func (c *Client) EnsureGuestPoolScale(ctx context.Context) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	targetCount := len(c.workers)
+	if targetCount < 10 {
+		targetCount = 10
+	}
+
+	currentCount := len(c.guestPool)
+	if currentCount == targetCount {
+		return
+	}
+
+	if currentCount < targetCount {
+		// Add slots
+		c.log.Info("📈 Scaling up Guest Pool", zap.Int("from", currentCount), zap.Int("to", targetCount))
+		for i := currentCount; i < targetCount; i++ {
+			w := NewGuestWorker(c.cfg, c.log, c)
+			w.PlatformName = "gemini"
+			w.InstanceID = fmt.Sprintf("gemini-guest-%d", i+1)
+			c.guestPool = append(c.guestPool, w)
+			
+			// Initialize in background
+			go func(gw *GuestWorker) {
+				_ = gw.Init(ctx)
+			}(w)
+		}
+	} else {
+		// Reduce slots
+		c.log.Info("📉 Scaling down Guest Pool", zap.Int("from", currentCount), zap.Int("to", targetCount))
+		c.guestPool = c.guestPool[:targetCount]
+	}
+
+	c.guestCond.Broadcast() // Wake up anyone waiting for guest slots
 }
 
 func (c *Client) RemoveAccount(id string) {
@@ -281,7 +330,10 @@ func (c *Client) RemoveAccount(id string) {
 			break
 		}
 	}
-	go c.SaveAccounts()
+	go func() {
+		c.SaveAccounts()
+		c.EnsureGuestPoolScale(context.Background())
+	}()
 }
 
 func (c *Client) GetAccounts() []AccountConfig {
@@ -341,7 +393,7 @@ func (c *Client) TestAccount(id string) error {
 	if targetWorker == nil {
 		isNew = true
 		c.log.Info("🚀 Worker for account not in pool, creating new worker for test", zap.String("id", id))
-		targetWorker = NewWorker(c.cfg, c.log, acc.Secure1PSID, acc.Secure1PSIDTS)
+		targetWorker = NewWorker(c.cfg, c.log, c, acc.Secure1PSID, acc.Secure1PSIDTS)
 		targetWorker.AccountID = id
 		targetWorker.OnSuccess = c.ReportSuccess
 		targetWorker.OnError = c.ReportError
@@ -578,7 +630,8 @@ func (c *Client) AcquireWorker(ctx context.Context) (*Worker, *AccountConfig, fu
 
 	// Check if any regular accounts are healthy or even configured
 	if len(c.workers) == 0 {
-		return c.acquireGuestFallbackLocked(ctx)
+		c.mu.Unlock()
+		return c.AcquireGuestWorker(ctx)
 	}
 
 	for {
@@ -592,8 +645,6 @@ func (c *Client) AcquireWorker(ctx context.Context) (*Worker, *AccountConfig, fu
 		eligibleFound := false
 		for _, w := range c.workers {
 			if a, ok := c.accountsMap[w.AccountID]; ok && a.Status != StatusBanned {
-				// We can only wait for an account if it is either healthy (ready to be picked but maybe busy)
-				// or busy (so it will eventually free up). If it's neither, waiting is useless.
 				if w.IsHealthy() || w.IsBusy() {
 					eligibleFound = true
 					break
@@ -601,8 +652,9 @@ func (c *Client) AcquireWorker(ctx context.Context) (*Worker, *AccountConfig, fu
 			}
 		}
 		if !eligibleFound {
-			// All regular accounts are banned or none configured
-			return c.acquireGuestFallbackLocked(ctx)
+			// All regular accounts are banned or none configured - Fallback to Guest HA Pool
+			c.mu.Unlock()
+			return c.AcquireGuestWorker(ctx)
 		}
 
 		worker, acc, err := c.findIdleWorkerLocked()
@@ -691,6 +743,7 @@ func (c *Client) acquireGuestFallbackLocked(_ context.Context) (*Worker, *Accoun
 				healthy:    true,
 				at:         pc.AtToken,
 				SchemaMgr:  &SchemaManager{schema: &schema},
+				Client:     c,
 			}
 			mockAcc := &AccountConfig{ID: "guest-" + selected.PlatformName}
 			return mockWorker, mockAcc, func() {}, nil
@@ -702,9 +755,64 @@ func (c *Client) acquireGuestFallbackLocked(_ context.Context) (*Worker, *Accoun
 }
 
 // AcquireGuestWorker explicitly skips all regular accounts and fetches a Guest Worker
+// Implementation: Wait if busy, fail if unhealthy (learning).
 func (c *Client) AcquireGuestWorker(ctx context.Context) (*Worker, *AccountConfig, func(), error) {
 	c.mu.Lock()
-	return c.acquireGuestFallbackLocked(ctx)
+	defer c.mu.Unlock()
+
+	for {
+		// 1. Check if gemini platform is valid (Healthy)
+		geminiConfig, _ := c.multiGuestMgr.GetConfig("gemini")
+		if !geminiConfig.IsValid || geminiConfig.Disabled {
+			c.log.Warn("🚫 Guest system NOT ready (Invalid/Learning). Failing fast.")
+			return nil, nil, nil, fmt.Errorf("hệ thống Guest chưa sẵn sàng (đang học cấu tạo). Vui lòng thử lại sau.")
+		}
+
+		// 2. Try to find an idle slot
+		for _, w := range c.guestPool {
+			if w.TryLock() {
+				release := func() {
+					w.Unlock()
+					c.guestCond.Broadcast()
+				}
+				
+				pc := w.GetConfig()
+				schema := pc.GJSONPaths
+				mockWorker := &Worker{
+					AccountID:  w.InstanceID,
+					httpClient: w.httpClient,
+					log:        w.log,
+					healthy:    true,
+					at:         pc.AtToken,
+					SchemaMgr:  &SchemaManager{schema: &schema},
+					Client:     c,
+				}
+				mockAcc := &AccountConfig{ID: w.InstanceID}
+				
+				c.log.Info("🔓 Guest slot acquired", zap.String("instance", w.InstanceID))
+				return mockWorker, mockAcc, release, nil
+			}
+		}
+
+		// 3. All slots busy — Wait in queue
+		c.log.Debug("⏳ All guest slots busy, waiting in queue...")
+		
+		ctxDone := make(chan struct{})
+		go func() {
+			select {
+			case <-ctx.Done():
+				c.guestCond.Broadcast()
+			case <-ctxDone:
+			}
+		}()
+		
+		c.guestCond.Wait()
+		close(ctxDone)
+		
+		if ctx.Err() != nil {
+			return nil, nil, nil, ctx.Err()
+		}
+	}
 }
 
 // GenerateContent acquires an idle worker, generates content, and releases the worker.
@@ -1548,7 +1656,224 @@ Return ONLY a valid JSON object with these keys:
 	return nil, fmt.Errorf("oracle consultation failed after trying all %d keys. last error: %w", len(apiKeys), lastErr)
 }
 
+// TryStartDeleteDiscovery attempts to acquire the global lock for delete config discovery.
+// Returns true if acquired, false if discovery is already in progress.
+func (c *Client) TryStartDeleteDiscovery() bool {
+	c.discoveryDeleteMu.Lock()
+	defer c.discoveryDeleteMu.Unlock()
+	if c.isDiscoveringDelete {
+		return false
+	}
+	c.isDiscoveringDelete = true
+	return true
+}
+
+// EndDeleteDiscovery releases the global lock for delete config discovery.
+func (c *Client) EndDeleteDiscovery() {
+	c.discoveryDeleteMu.Lock()
+	defer c.discoveryDeleteMu.Unlock()
+	c.isDiscoveringDelete = false
+}
+
+// GetOracleAPIKeys returns a shuffled copy of the configured Gemini Oracle API keys.
+func (c *Client) GetOracleAPIKeys() []string {
+	rawKeys := c.cfg.Gemini.OracleAPIKeys
+	rawKeys = strings.Trim(rawKeys, "[] ")
+	keys := []string{}
+	for _, k := range strings.Split(rawKeys, ",") {
+		k = strings.TrimSpace(strings.Trim(k, " \"'"))
+		if k != "" {
+			keys = append(keys, k)
+		}
+	}
+	rand.New(rand.NewSource(time.Now().UnixNano())).Shuffle(len(keys), func(i, j int) {
+		keys[i], keys[j] = keys[j], keys[i]
+	})
+	return keys
+}
+
+// GetDeleteConfigMgr returns the client's DeleteConfigManager.
+func (c *Client) GetDeleteConfigMgr() *DeleteConfigManager {
+	return c.deleteCfgMgr
+}
+
+// callDeleteOracle uses Gemini API keys (rotated randomly) to discover the current
+// batchexecute RPCID and JSON payload format used for direct chat deletion on Gemini Web.
+// excludeRPCIDs lists RPCIDs that have already been tried and failed, so Oracle is told to skip them.
+func (c *Client) callDeleteOracle(ctx context.Context, pageHTML string, rawChatResponse string, excludeRPCIDs []string) (*DeleteConfig, error) {
+	apiKeys := c.GetOracleAPIKeys()
+	if len(apiKeys) == 0 {
+		return nil, errors.New("no Oracle API Keys configured (GEMINI_PRO_API_KEYS)")
+	}
+	var lastErr error
+	for idx, apiKey := range apiKeys {
+		cfg, err := c.callDeleteOracleWithKey(ctx, apiKey, idx, pageHTML, rawChatResponse, excludeRPCIDs)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return cfg, nil
+	}
+	return nil, fmt.Errorf("delete oracle failed after all %d keys. last error: %w", len(apiKeys), lastErr)
+}
+
+// callDeleteOracleWithKey consults a SINGLE Gemini API key for the delete RPCID + payload template.
+// excludeRPCIDs is passed into the prompt so the AI knows what has already failed.
+func (c *Client) callDeleteOracleWithKey(ctx context.Context, apiKey string, keyIdx int, pageHTML string, rawChatResponse string, excludeRPCIDs []string) (*DeleteConfig, error) {
+	if apiKey == "" {
+		return nil, errors.New("empty API key")
+	}
+
+	snippet := pageHTML
+	if len(snippet) > 8000 {
+		snippet = snippet[:8000]
+	}
+
+	respSnippet := rawChatResponse
+	if len(respSnippet) > 4000 {
+		respSnippet = respSnippet[:4000]
+	}
+
+	excludeNote := ""
+	if len(excludeRPCIDs) > 0 {
+		excludeNote = fmt.Sprintf(`
+IMPORTANT: The following RPCIDs have already been tried and returned HTTP 400 errors — do NOT suggest them: %v`, excludeRPCIDs)
+	}
+
+	prompt := fmt.Sprintf(`You are reverse-engineering the Google Gemini Web Chat UI internal API.
+
+Below is a snippet of HTML/JS from https://gemini.google.com/app AND a sample raw batchexecute response from a successful message send.
+Find the internal batchexecute RPC method used to DELETE a specific conversation.
+
+In Google batchexecute protocol the delete call looks like:
+  POST https://gemini.google.com/_/BardChatUi/data/batchexecute
+  Query: rpcids=RPCID&source-path=/app&rt=c
+  Body (form): at=<token>&f.req=[[["%%s","<INNER_PAYLOAD>",null,"generic"]]]
+
+The inner payload takes the conversation ID. Based on the "Sample Raw Response" provided below, identify the nesting level Google is currently using for conversation metadata.
+Common working formats:
+  - Triple-nested array: [[["%%s"]]]    <-- most common
+  - Double-nested:       [["%%s"]]
+
+Known historical RPCIDs (pick the latest/correct one):
+  "TmdDAd", "GzXR5e", "LnXdMd", "IoKd5", "bv9Bab", "iRPdYd", "rkBBVd", "QTinf"
+%s
+
+Sample Raw Response (from successful message):
+%s
+
+HTML snippet:
+%s
+
+Return ONLY a valid JSON object (no markdown, no extra text):
+{
+  "rpcid": "<the 5-10 char RPCID string>",
+  "payload_template": "[[[\"%%s\"]]]"  
+}
+NOTE: payload_template must be a valid Go fmt.Sprintf format string where %%s will be replaced by the conversation ID. The simplest correct value is: [[["%%s"]]]`,
+		excludeNote, respSnippet, snippet)
+
+	payload := map[string]interface{}{
+		"contents": []interface{}{
+			map[string]interface{}{
+				"parts": []interface{}{
+					map[string]interface{}{"text": prompt},
+				},
+			},
+		},
+		"generationConfig": map[string]interface{}{
+			"responseMimeType": "application/json",
+		},
+	}
+
+	// CRITICAL: DO NOT CHANGE THIS MODEL. 'gemini-flash-latest' is used for Oracle tasks.
+	const OracleModel = "gemini-flash-latest"
+	apiURL := "https://generativelanguage.googleapis.com/v1beta/models/" + OracleModel + ":generateContent"
+
+	c.log.Info("🔮 DeleteOracle: Consulting Gemini API for delete config",
+		zap.Int("key_index", keyIdx),
+		zap.String("key_prefix", apiKey[:8]),
+		zap.Strings("excluded_rpcids", excludeRPCIDs),
+	)
+
+	oracleClient := req.NewClient().SetTimeout(60 * time.Second)
+	resp, err := oracleClient.R().
+		SetContext(ctx).
+		SetHeader("X-goog-api-key", apiKey).
+		SetHeader("Content-Type", "application/json").
+		SetBody(payload).
+		Post(apiURL)
+
+	if err != nil {
+		return nil, fmt.Errorf("key[%d] request error: %w", keyIdx, err)
+	}
+	if resp.StatusCode == 429 || resp.StatusCode == 403 {
+		return nil, fmt.Errorf("key[%d] blocked (status=%d)", keyIdx, resp.StatusCode)
+	}
+	if !resp.IsSuccess() {
+		return nil, fmt.Errorf("key[%d] status %d: %s", keyIdx, resp.StatusCode, resp.String())
+	}
+
+	var oracleResp struct {
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
+			} `json:"content"`
+		} `json:"candidates"`
+	}
+	if err := json.Unmarshal(resp.Bytes(), &oracleResp); err != nil {
+		return nil, fmt.Errorf("key[%d] unmarshal error: %w", keyIdx, err)
+	}
+	if len(oracleResp.Candidates) == 0 || len(oracleResp.Candidates[0].Content.Parts) == 0 {
+		return nil, fmt.Errorf("key[%d] empty Oracle response", keyIdx)
+	}
+
+	responseText := oracleResp.Candidates[0].Content.Parts[0].Text
+	c.log.Info("🔮 DeleteOracle: Response received",
+		zap.Int("key_index", keyIdx),
+		zap.String("content", responseText),
+	)
+
+	var cfg DeleteConfig
+	if err := json.Unmarshal([]byte(responseText), &cfg); err != nil {
+		// Try stripping markdown fences
+		if strings.Contains(responseText, "```") {
+			re := regexp.MustCompile("(?s)```(?:json)?\\n(.*?)\\n```")
+			if match := re.FindStringSubmatch(responseText); len(match) > 1 {
+				if err2 := json.Unmarshal([]byte(match[1]), &cfg); err2 == nil && cfg.RPCID != "" {
+					// fall through to template validation below
+					goto validateTemplate
+				}
+			}
+		}
+		return nil, fmt.Errorf("key[%d] could not parse response as DeleteConfig: %w", keyIdx, err)
+	}
+
+validateTemplate:
+	if cfg.RPCID == "" {
+		return nil, fmt.Errorf("key[%d] Oracle returned empty RPCID", keyIdx)
+	}
+
+	// Validate that the payload_template is a proper %%s format string producing valid JSON
+	testPayload := fmt.Sprintf(cfg.PayloadTemplate, "test_conv_id")
+	var testCheck interface{}
+	if err := json.Unmarshal([]byte(testPayload), &testCheck); err != nil {
+		c.log.Warn("⚠️ DeleteOracle: payload_template produces invalid JSON — falling back to default template",
+			zap.String("rpcid", cfg.RPCID),
+			zap.String("bad_template", cfg.PayloadTemplate),
+			zap.String("produced", testPayload),
+		)
+		cfg.PayloadTemplate = DefaultDeleteConfig().PayloadTemplate
+	}
+
+	return &cfg, nil
+}
+
+
 // minifyJSPB compresses valid JSON strings safely and replaces null with 0 to save tokens.
+
 func minifyJSPB(input string) string {
 	input = strings.TrimSpace(input)
 	var out bytes.Buffer
@@ -1635,6 +1960,9 @@ func (c *Client) TriggerGuestLearning(platform string) {
 	if platform == "" {
 		platform = "gemini"
 	}
+	// Invalidate immediately to trigger Global Pause across all guest slots
+	c.multiGuestMgr.Invalidate(platform)
+
 	// Kiểm tra xem đã đến lúc thử lại chưa
 	if pc, ok := c.multiGuestMgr.GetConfig(platform); ok {
 		now := time.Now().Unix()
@@ -1794,12 +2122,23 @@ func (c *Client) HandleGuestError(id string, err error) {
 		return
 	}
 	platform := strings.TrimPrefix(id, "guest-")
-	c.log.Warn("⚠️ Guest worker request FAILED. Queuing re-learn (no disable).", zap.String("platform", platform), zap.Error(err))
 
-	// IMPORTANT: Do NOT call Invalidate() here.
-	// Invalidate increases fail_count and can permanently disable the guest after 5 request failures.
-	// Guest errors during REQUEST handling are transient (bot flag, parse error, etc.)
-	// and should only trigger re-learning, NOT counting against the platform's health.
-	// Disable only happens when re-learning itself fails 5 times in a row (inside startBotWorker).
+	isBlocked := strings.Contains(err.Error(), "403") || strings.Contains(err.Error(), "access denied")
+	
+	msg := "⚠️ Guest worker request FAILED"
+	if isBlocked {
+		msg = "🚫 Gemini Guest Rejected Request (403 Forbidden) - Session likely dead or IP blocked"
+	}
+	
+	c.log.Warn(msg, zap.String("platform", platform), zap.Error(err))
+
+	// Mark as invalid to FORCE re-learning. 
+	// We still don't call c.multiGuestMgr.Invalidate(platform) here to avoid incrementing fail_count (throttling),
+	// but we must set IsValid=false so the Bot Worker doesn't skip the task.
+	if pc, ok := c.multiGuestMgr.GetConfig(platform); ok {
+		pc.IsValid = false
+		c.multiGuestMgr.SaveConfig(pc)
+	}
+
 	c.TriggerGuestLearning(platform)
 }

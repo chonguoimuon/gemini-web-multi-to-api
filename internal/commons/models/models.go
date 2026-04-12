@@ -10,6 +10,7 @@ import (
 type Message struct {
 	Role       string     `json:"role"`
 	Content    string     `json:"content"`
+	Type       string     `json:"type,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
@@ -98,8 +99,8 @@ type Usage struct {
 	TotalTokens              int                  `json:"total_tokens"`
 	InputTokens      		 int 				  `json:"input_tokens,omitempty"`
 	OutputTokens             int 				  `json:"output_tokens,omitempty"`	
-	CompletionTokensDetails  interface{}   		  `json:"completion_tokens_details"`
-	PromptTokensDetails      interface{}       	  `json:"prompt_tokens_details"`
+	CompletionTokensDetails  interface{}   		  `json:"completion_tokens_details,omitempty"`
+	PromptTokensDetails      interface{}       	  `json:"prompt_tokens_details,omitempty"`
 }
 
 type CompletionDetails struct {

@@ -138,9 +138,11 @@ func (c *AdminController) HandleTestAccount(ctx fiber.Ctx) error {
 }
 
 type ConfigResponse struct {
-	LogRawRequests       bool `json:"log_raw_requests"`
-	AutoDeleteChat       bool `json:"auto_delete_chat"`
-	EnableGuestDiscovery bool `json:"enable_guest_discovery"`
+	LogRawRequests   bool `json:"log_raw_requests"`
+	LogRawSendGemini bool `json:"log_raw_send_gemini"`
+	LogRawGeminiOut  bool `json:"log_raw_gemini_out"`
+	LogRawPayloadOut bool `json:"log_raw_payload_out"`
+	AutoDeleteChat   bool `json:"auto_delete_chat"`
 }
 
 // @Summary Get Current Configuration
@@ -152,15 +154,22 @@ type ConfigResponse struct {
 // @Success 200 {object} ConfigResponse
 // @Router /admin/v1/config [get]
 func (c *AdminController) HandleGetConfig(ctx fiber.Ctx) error {
-	return ctx.JSON(fiber.Map{
-		"log_raw_requests": c.cfg.Gemini.LogRawRequests,
-		"auto_delete_chat": c.cfg.Gemini.AutoDeleteChat,
+	rc := c.cfg.RuntimeCfgMgr.Get()
+	return ctx.JSON(ConfigResponse{
+		LogRawRequests:   rc.LogRawRequests,
+		LogRawSendGemini: rc.LogRawSendGemini,
+		LogRawGeminiOut:  rc.LogRawGeminiOut,
+		LogRawPayloadOut: rc.LogRawPayloadOut,
+		AutoDeleteChat:   rc.AutoDeleteChat,
 	})
 }
 
 type UpdateConfigRequest struct {
-	LogRawRequests *bool `json:"log_raw_requests"`
-	AutoDeleteChat *bool `json:"auto_delete_chat"`
+	LogRawRequests   *bool `json:"log_raw_requests"`
+	LogRawSendGemini *bool `json:"log_raw_send_gemini"`
+	LogRawGeminiOut  *bool `json:"log_raw_gemini_out"`
+	LogRawPayloadOut *bool `json:"log_raw_payload_out"`
+	AutoDeleteChat   *bool `json:"auto_delete_chat"`
 }
 
 type UpdateConfigResponse struct {
@@ -188,17 +197,42 @@ func (c *AdminController) HandleUpdateConfig(ctx fiber.Ctx) error {
 		c.cfg.Gemini.LogRawRequests = *req.LogRawRequests
 		c.log.Info("Admin Updated Config", zap.Bool("log_raw_requests", *req.LogRawRequests))
 	}
+	if req.LogRawSendGemini != nil {
+		c.cfg.Gemini.LogRawSendGemini = *req.LogRawSendGemini
+		c.log.Info("Admin Updated Config", zap.Bool("log_raw_send_gemini", *req.LogRawSendGemini))
+	}
+	if req.LogRawGeminiOut != nil {
+		c.cfg.Gemini.LogRawGeminiOut = *req.LogRawGeminiOut
+		c.log.Info("Admin Updated Config", zap.Bool("log_raw_gemini_out", *req.LogRawGeminiOut))
+	}
+	if req.LogRawPayloadOut != nil {
+		c.cfg.Gemini.LogRawPayloadOut = *req.LogRawPayloadOut
+		c.log.Info("Admin Updated Config", zap.Bool("log_raw_payload_out", *req.LogRawPayloadOut))
+	}
 	if req.AutoDeleteChat != nil {
 		c.cfg.Gemini.AutoDeleteChat = *req.AutoDeleteChat
 		c.log.Info("Admin Updated Config", zap.Bool("auto_delete_chat", *req.AutoDeleteChat))
 	}
 
+	// Persist to disk so settings survive restart
+	c.cfg.RuntimeCfgMgr.Update(req.AutoDeleteChat, req.LogRawRequests, req.LogRawSendGemini, req.LogRawGeminiOut, req.LogRawPayloadOut)
+	c.log.Info("💾 Admin: Runtime config saved to disk",
+		zap.Bool("log_raw_requests", c.cfg.Gemini.LogRawRequests),
+		zap.Bool("log_raw_send_gemini", c.cfg.Gemini.LogRawSendGemini),
+		zap.Bool("log_raw_gemini_out", c.cfg.Gemini.LogRawGeminiOut),
+		zap.Bool("log_raw_payload_out", c.cfg.Gemini.LogRawPayloadOut),
+		zap.Bool("auto_delete_chat", c.cfg.Gemini.AutoDeleteChat),
+	)
+
 	return ctx.JSON(fiber.Map{
 		"status":  "success",
-		"message": "Configuration updated",
-		"data": fiber.Map{
-			"log_raw_requests": c.cfg.Gemini.LogRawRequests,
-			"auto_delete_chat": c.cfg.Gemini.AutoDeleteChat,
+		"message": "Configuration updated and saved to disk",
+		"data": ConfigResponse{
+			LogRawRequests:   c.cfg.Gemini.LogRawRequests,
+			LogRawSendGemini: c.cfg.Gemini.LogRawSendGemini,
+			LogRawGeminiOut:  c.cfg.Gemini.LogRawGeminiOut,
+			LogRawPayloadOut: c.cfg.Gemini.LogRawPayloadOut,
+			AutoDeleteChat:   c.cfg.Gemini.AutoDeleteChat,
 		},
 	})
 }

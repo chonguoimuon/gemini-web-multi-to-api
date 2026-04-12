@@ -10,6 +10,69 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+// DeleteConfig stores the configuration for directly deleting a Gemini chat session.
+// This is used to directly hit the Gemini batchexecute endpoint (not MyActivity).
+type DeleteConfig struct {
+	// RPCID is the RPC method name (e.g. "IoKd5", "LnXdMd", etc.) used in batchexecute
+	RPCID string `json:"rpcid"`
+	// PayloadTemplate is a Go format string with a single %s for the conversation ID
+	PayloadTemplate string `json:"payload_template"`
+}
+
+// DefaultDeleteConfig returns the current known working config for direct chat deletion via batchexecute.
+func DefaultDeleteConfig() *DeleteConfig {
+	return &DeleteConfig{
+		RPCID:           "TmdDAd",
+		PayloadTemplate: `["%s"]`,
+	}
+}
+
+// DeleteConfigManager handles loading/saving of the delete configuration.
+type DeleteConfigManager struct {
+	config *DeleteConfig
+	path   string
+	mu     sync.RWMutex
+}
+
+func NewDeleteConfigManager() *DeleteConfigManager {
+	dm := &DeleteConfigManager{
+		config: DefaultDeleteConfig(),
+		path:   filepath.Join("data", "gemini_delete_config.json"),
+	}
+	dm.Load()
+	return dm
+}
+
+func (d *DeleteConfigManager) GetConfig() DeleteConfig {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return *d.config
+}
+
+func (d *DeleteConfigManager) UpdateConfig(nc *DeleteConfig) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.config = nc
+	d.save()
+}
+
+func (d *DeleteConfigManager) Load() {
+	data, err := os.ReadFile(d.path)
+	if err != nil {
+		return
+	}
+	var cfg DeleteConfig
+	if err := json.Unmarshal(data, &cfg); err == nil && cfg.RPCID != "" {
+		d.config = &cfg
+	}
+}
+
+func (d *DeleteConfigManager) save() {
+	os.MkdirAll(filepath.Dir(d.path), 0755)
+	data, _ := json.MarshalIndent(d.config, "", "  ")
+	os.WriteFile(d.path, data, 0644)
+}
+
 // ExtractorSchema defines the GJSON paths for Gemini response extraction
 type ExtractorSchema struct {
 	// CandidatePath is the path to the array of response candidates

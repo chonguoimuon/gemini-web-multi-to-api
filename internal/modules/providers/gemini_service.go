@@ -78,6 +78,7 @@ type Worker struct {
 	OnRelease func() // Called when worker transitions from busy→idle, to wake up queue waiters
 
 	SchemaMgr *SchemaManager
+	Client    *Client // Back-reference to parent Client for Oracle/Delete config access
 }
 
 type CookieStore struct {
@@ -91,14 +92,14 @@ const (
 	defaultRefreshIntervalMinutes = 30
 )
 
-func NewWorker(cfg *configs.Config, log *zap.Logger, psid, psidTS string) *Worker {
+func NewWorker(cfg *configs.Config, log *zap.Logger, client *Client, psid, psidTS string) *Worker {
 	cookies := &CookieStore{
 		Secure1PSID:   psid,
 		Secure1PSIDTS: psidTS,
 		UpdatedAt:     time.Now(),
 	}
 
-	client := reqv3.NewClient().
+	httpClient := reqv3.NewClient().
 		ImpersonateChrome().
 		SetTimeout(10 * time.Minute).
 		SetCommonHeaders(DefaultHeaders)
@@ -112,7 +113,7 @@ func NewWorker(cfg *configs.Config, log *zap.Logger, psid, psidTS string) *Worke
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	return &Worker{
-		httpClient:      client,
+		httpClient:      httpClient,
 		cookies:         cookies,
 		autoRefresh:     true,
 		refreshInterval: time.Duration(refreshIntervalMinutes) * time.Minute,
@@ -121,6 +122,7 @@ func NewWorker(cfg *configs.Config, log *zap.Logger, psid, psidTS string) *Worke
 		log:             log,
 		allCookies:      make(map[string]*http.Cookie),
 		requestCounter:  rng.Intn(9000) + 1000, // Start with 4 digits like Python
+		Client:          client,
 	}
 }
 
@@ -754,16 +756,22 @@ func (c *Worker) GenerateContent(ctx context.Context, prompt string, options ...
 		isHTML := strings.Contains(body, "<!DOCTYPE html") || strings.Contains(body, "<html>")
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 			err = ErrAccessDenied
+			c.log.Error("🚫 Gemini Access Denied (403 Forbidden). Your cookies are dead or your IP is blocked by Google.",
+				zap.Int("status", resp.StatusCode),
+				zap.String("account_id", c.AccountID),
+			)
 		} else if resp.StatusCode == http.StatusTooManyRequests && isHTML {
 			err = ErrBotBlocked
+			c.log.Error("🛑 Gemini Rate Limited/Bot Blocked (429). Google detected automation.",
+				zap.Int("status", resp.StatusCode),
+			)
 		} else {
 			err = fmt.Errorf("generate failed with status: %d", resp.StatusCode)
+			c.log.Error("Server returned error status",
+				zap.Int("status", resp.StatusCode),
+				zap.String("response_body", body500),
+			)
 		}
-		c.log.Error("Server returned error status",
-			zap.Int("status", resp.StatusCode),
-			zap.String("response_body", body500),
-			zap.String("error_msg", err.Error()),
-		)
 		if c.OnError != nil {
 			c.OnError(c.AccountID, err)
 		}

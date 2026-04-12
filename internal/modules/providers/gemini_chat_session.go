@@ -13,10 +13,11 @@ import (
 
 // GeminiChatSession implements ChatSession interface for Gemini
 type GeminiChatSession struct {
-	worker   *Worker // Refers to providers.Worker
-	model    string
-	metadata *SessionMetadata
-	history  []Message
+	worker          *Worker // Refers to providers.Worker
+	model           string
+	metadata        *SessionMetadata
+	history         []Message
+	lastRawResponse string
 }
 
 // SendMessage sends a message in the chat session
@@ -146,7 +147,10 @@ func (s *GeminiChatSession) SendMessage(ctx context.Context, message string, opt
 		return nil, err
 	}
 
-	response, err := s.worker.parseResponse(resp.String())
+	rawBody := resp.String()
+	s.lastRawResponse = rawBody
+
+	response, err := s.worker.parseResponse(rawBody)
 	if err != nil {
 		if s.worker.OnError != nil {
 			s.worker.OnError(s.worker.AccountID, err)
@@ -238,90 +242,243 @@ func (s *GeminiChatSession) buildMetadata() []interface{} {
 	}
 }
 
-// Delete deletes the chat session from Gemini Web history
+// Delete deletes the chat session directly from Gemini Web history via batchexecute.
+// Strategy:
+//  1. Wait 2 seconds to reduce anti-bot detection risk.
+//  2. Try the cached DeleteConfig (RPCID + payload template) from file.
+//  3. If that fails (non-200 or Google returns an error), fetch the Gemini app HTML and
+//     ask the Oracle (Gemini Pro API key, randomly rotated) for the current RPCID/template.
+//  4. Retry the delete with the new config.
+//  5. IF and ONLY IF the deletion succeeds, save the (possibly updated) config to disk.
 func (s *GeminiChatSession) Delete() error {
 	if s.metadata == nil || s.metadata.ConversationID == "" {
+		s.worker.log.Debug("🗑️ Delete: skipped — no conversation ID in metadata")
 		return nil
 	}
 
 	s.worker.mu.RLock()
 	at := s.worker.at
+	bl := s.worker.buildLabel
+	sid := s.worker.sessionID
 	s.worker.mu.RUnlock()
 
 	if at == "" {
-		return fmt.Errorf("client not initialized")
+		return fmt.Errorf("delete: worker not initialized (no 'at' token)")
+	}
+
+	// Skip deletion for guest accounts to save resources
+	if strings.HasPrefix(s.worker.AccountID, "guest-") {
+		s.worker.log.Debug("🗑️ Delete: skipped — guest account does not need chat deletion")
+		return nil
 	}
 
 	cid := s.metadata.ConversationID
-	if cid == "" {
-		return nil
-	}
+	log := s.worker.log
 
-	s.worker.log.Info("🔄 Attempting to delete chat via MyActivity API...")
+	log.Info("⏳ Delete: Waiting 2s before deleting to avoid anti-bot detection...",
+		zap.String("conversation_id", cid),
+		zap.String("account_id", s.worker.AccountID),
+	)
+	time.Sleep(2 * time.Second)
 
-	// 1. Fetch the 'at' token for MyActivity endpoint
-	respHTML, err := s.worker.httpClient.R().
-		SetContext(context.Background()).
-		Get("https://myactivity.google.com/product/gemini")
-
-	if err != nil {
-		return fmt.Errorf("failed to fetch myactivity page: %v", err)
-	}
-
-	myActivityBody := respHTML.String()
-
-	// Extract the SNlM0e token (at token) for myactivity
-	var myActivityAT string
-	if start := strings.Index(myActivityBody, `SNlM0e":"`); start != -1 {
-		end := strings.Index(myActivityBody[start+9:], `"`)
-		if end != -1 {
-			myActivityAT = myActivityBody[start+9 : start+9+end]
+	// Helper: build and send the batchexecute delete request
+	doDelete := func(cfg DeleteConfig) error {
+		innerPayload := fmt.Sprintf(cfg.PayloadTemplate, cid)
+		reqArray := []interface{}{
+			[]interface{}{
+				[]interface{}{cfg.RPCID, innerPayload, nil, "generic"},
+			},
 		}
+		reqJSON, _ := json.Marshal(reqArray)
+
+		s.worker.muCounter.Lock()
+		s.worker.requestCounter += 100000
+		reqID := s.worker.requestCounter
+		s.worker.muCounter.Unlock()
+
+		params := map[string]string{
+			"rpcids":      cfg.RPCID,
+			"source-path": "/app",
+			"hl":          "en",
+			"_reqid":      fmt.Sprintf("%d", reqID),
+			"rt":          "c",
+		}
+		if bl != "" {
+			params["bl"] = bl
+		}
+		if sid != "" {
+			params["f.sid"] = sid
+		}
+
+		s.worker.ReqMu.RLock()
+		reqJSONStr := string(reqJSON)
+		
+		// Log raw request for diagnostic purposes
+		log.Debug("🗑️ Delete: Sending raw request", 
+			zap.String("rpcids", cfg.RPCID),
+			zap.String("at", at),
+			zap.String("f.req", reqJSONStr),
+		)
+
+		resp, err := s.worker.httpClient.R().
+			SetContext(context.Background()).
+			SetHeaders(map[string]string{
+				"Sec-Fetch-Dest": "empty",
+				"Sec-Fetch-Mode": "cors",
+				"Sec-Fetch-Site": "same-origin",
+			}).
+			SetQueryParams(params).
+			SetFormData(map[string]string{
+				"at":    at,
+				"f.req": reqJSONStr,
+			}).
+			Post(EndpointBatchExec)
+		s.worker.ReqMu.RUnlock()
+
+		if err != nil {
+			return fmt.Errorf("delete request failed: %w", err)
+		}
+
+		// Google batchexecute returns HTTP 200 for successful deletes.
+		if resp.StatusCode == 200 {
+			return nil
+		}
+
+		// Log raw response on failure
+		log.Warn("🗑️ Delete: Request FAILED",
+			zap.Int("status", resp.StatusCode),
+			zap.String("rpcid", cfg.RPCID),
+			zap.String("raw_response", resp.String()),
+		)
+
+		return fmt.Errorf("delete batchexecute returned status %d", resp.StatusCode)
 	}
 
-	if myActivityAT == "" {
-		return fmt.Errorf("could not find 'at' token for myactivity")
+	// Step 1: Try with cached config
+	var activeCfg DeleteConfig
+	if s.worker.Client != nil && s.worker.Client.GetDeleteConfigMgr() != nil {
+		activeCfg = s.worker.Client.GetDeleteConfigMgr().GetConfig()
+		log.Info("🗑️ Delete: Using cached delete config",
+			zap.String("rpcid", activeCfg.RPCID),
+			zap.String("payload_template", activeCfg.PayloadTemplate),
+		)
+	} else {
+		activeCfg = *DefaultDeleteConfig()
+		log.Info("🗑️ Delete: No DeleteConfigManager found, using built-in default config",
+			zap.String("rpcid", activeCfg.RPCID),
+		)
 	}
 
-	// 2. Build the TmdDAd payload (delete recent activity)
-	// Delete activity from 1 hour ago to 1 hour in the future
-	now := time.Now().Unix()
-	startTime := now - 3600*24 // past 24 hours to be safe
-	endTime := now + 3600
-
-	innerPayload := fmt.Sprintf(`[[null,null,null,null,null,null,null,["bard"]],null,[[[%d],[%d,999999999]]]]`, startTime, endTime)
-
-	reqArray := []interface{}{
-		[]interface{}{
-			[]interface{}{"TmdDAd", innerPayload, nil, "generic"},
-		},
-	}
-
-	reqJSON, _ := json.Marshal(reqArray)
-
-	formData := map[string]string{
-		"at":    myActivityAT,
-		"f.req": string(reqJSON),
-	}
-
-	resp, err := s.worker.httpClient.R().
-		SetContext(context.Background()).
-		SetFormData(formData).
-		SetQueryParam("rpcids", "TmdDAd").
-		SetQueryParam("source-path", "/product/gemini").
-		SetQueryParam("rt", "c").
-		SetQueryParam("at", myActivityAT).
-		Post("https://myactivity.google.com/_/FootprintsMyactivityUi/data/batchexecute")
-
-	if err != nil {
-		return fmt.Errorf("myactivity batchexecute failed: %v", err)
-	}
-
-	if resp.StatusCode == 200 && !strings.Contains(resp.String(), "error") && !strings.Contains(resp.String(), "Error") {
-		s.worker.log.Info("🎉 Delete Chat SUCCESSFUL via MyActivity TmdDAd payload!")
+	err := doDelete(activeCfg)
+	if err == nil {
+		log.Info("🎉 Delete: SUCCESSFUL (HTTP 200)", zap.String("conversation_id", cid))
 		return nil
 	}
 
-	s.worker.log.Debug("Failed MyActivity payload", zap.Int("status", resp.StatusCode), zap.String("body", resp.String()))
-	return fmt.Errorf("failed to delete via myactivity, status: %d", resp.StatusCode)
+	log.Warn("🗑️ Delete: Cached config failed — trying priority list before Oracle",
+		zap.Error(err),
+		zap.String("failed_rpcid", activeCfg.RPCID),
+	)
+
+	// Step 1.5: Try priority RPCIDs suggested by user
+	priorityConfigs := []DeleteConfig{
+		{RPCID: "GzXR5e", PayloadTemplate: `["%s"]`},
+		{RPCID: "MaZiqc", PayloadTemplate: `["%s"]`},
+		{RPCID: "qWymEb", PayloadTemplate: `["%s",[1,null,0,1]]`},
+		{RPCID: "TmdDAd", PayloadTemplate: `["%s"]`},
+	}
+
+	excludeRPCIDs := []string{activeCfg.RPCID}
+	
+	for _, pCfg := range priorityConfigs {
+		// Skip if we already tried it via cache
+		if pCfg.RPCID == activeCfg.RPCID {
+			continue
+		}
+
+		log.Info("🗑️ Delete: Trying priority config", zap.String("rpcid", pCfg.RPCID))
+		err = doDelete(pCfg)
+		if err == nil {
+			log.Info("🎉 Delete: SUCCESSFUL with priority config", zap.String("rpcid", pCfg.RPCID))
+			// Save to disk
+			if s.worker.Client != nil && s.worker.Client.GetDeleteConfigMgr() != nil {
+				s.worker.Client.GetDeleteConfigMgr().UpdateConfig(&pCfg)
+			}
+			return nil
+		}
+		excludeRPCIDs = append(excludeRPCIDs, pCfg.RPCID)
+	}
+
+	// Step 2: Oracle fallback loop — with global discovery lock to prevent redundant API calls
+	if s.worker.Client == nil {
+		log.Error("🗑️ Delete: No Client reference on worker — cannot invoke Oracle")
+		return fmt.Errorf("delete failed and Oracle unavailable (no client reference): %w", err)
+	}
+
+	if !s.worker.Client.TryStartDeleteDiscovery() {
+		log.Warn("🗑️ Delete: Skip Oracle discovery — another session is already discovering a new config")
+		return nil
+	}
+	defer s.worker.Client.EndDeleteDiscovery()
+
+	s.worker.ReqMu.RLock()
+	htmlResp, htmlErr := s.worker.httpClient.R().
+		SetContext(context.Background()).Get(EndpointInit)
+	s.worker.ReqMu.RUnlock()
+
+	pageHTML := ""
+	if htmlErr == nil {
+		pageHTML = htmlResp.String()
+	}
+	
+	oracleKeys := s.worker.Client.GetOracleAPIKeys()
+	maxAttempts := len(oracleKeys)
+	if maxAttempts == 0 {
+		return fmt.Errorf("no Oracle API keys available for retry loop")
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		log.Info(fmt.Sprintf("🗑️ Delete: Invoking DeleteOracle (Attempt %d/%d)...", attempt, maxAttempts))
+		oracleCtx, oracleCancel := context.WithTimeout(context.Background(), 60*time.Second)
+		
+		newCfg, oracleErr := s.worker.Client.callDeleteOracle(oracleCtx, pageHTML, s.lastRawResponse, excludeRPCIDs)
+		oracleCancel()
+
+		if oracleErr != nil {
+			log.Error("🗑️ Delete: Oracle failed to find new delete config", zap.Error(oracleErr))
+			lastErr = oracleErr
+			// Oracle fully failed (maybe all keys blocked), break loop
+			break
+		}
+
+		log.Info("🗑️ Delete: Oracle returned new config — retrying delete",
+			zap.String("new_rpcid", newCfg.RPCID),
+			zap.String("new_payload_template", newCfg.PayloadTemplate),
+		)
+
+		err = doDelete(*newCfg)
+		if err == nil {
+			log.Info("🎉 Delete: SUCCESSFUL with Oracle new config",
+				zap.String("conversation_id", cid),
+				zap.String("rpcid", newCfg.RPCID),
+			)
+			// Save to disk
+			if s.worker.Client.GetDeleteConfigMgr() != nil {
+				s.worker.Client.GetDeleteConfigMgr().UpdateConfig(newCfg)
+				log.Info("💾 Delete: New delete config SAVED to disk")
+			}
+			return nil
+		}
+
+		log.Warn("🗑️ Delete: Config from Oracle FAILED during attempt",
+			zap.String("failed_rpcid", newCfg.RPCID),
+			zap.Error(err),
+		)
+		excludeRPCIDs = append(excludeRPCIDs, newCfg.RPCID)
+		lastErr = err
+	}
+
+	log.Error("🗑️ Delete: Completely failed to delete after all Oracle attempts", zap.Error(lastErr))
+	return fmt.Errorf("delete failed completely: %w", lastErr)
 }

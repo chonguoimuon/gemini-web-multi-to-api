@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/adaptor"
@@ -86,11 +87,15 @@ func (h *MCPController) Register(app fiber.Router) {
 				w.Header().Set("Connection", "keep-alive")
 
 				// --- INTERNAL PATH REWRITE ---
-				oldPath := r.URL.Path
+				// Map Fiber path back to what the MCP SDK expects.
 				if r.Method == http.MethodGet {
 					r.URL.Path = "/"
 				} else {
-					r.URL.Path = "/messages"
+					// Strip /mcp prefix to match SDK's internal mux (usually / or /messages)
+					r.URL.Path = strings.TrimPrefix(r.URL.Path, "/mcp")
+					if r.URL.Path == "" {
+						r.URL.Path = "/"
+					}
 				}
 
 				// Log request body for POST to see what's happening
@@ -107,8 +112,8 @@ func (h *MCPController) Register(app fiber.Router) {
 
 					// --- STATELESS FALLBACK ---
 					// If no sessionId is provided, it's a one-shot request (like initialization)
-					if r.URL.Query().Get("sessionId") == "" {
-						h.log.Info("Handling stateless MCP request", zap.String("path", oldPath))
+					if r.URL.Query().Get("sessionId") == "" && r.URL.Query().Get("sessionid") == "" {
+						h.log.Info("Handling stateless MCP request", zap.String("path", r.URL.Path))
 						resp, err := h.srv.HandleOneShotRequest(r.Context(), bodyBytes)
 						if err != nil {
 							h.log.Error("Stateless MCP error", zap.Error(err))
@@ -159,6 +164,16 @@ func (w *interceptWriter) WriteHeader(status int) {
 }
 
 func (w *interceptWriter) Write(b []byte) (int, error) {
+	// --- SSE ENDPOINT BUGFIX ---
+	// If the SDK tells the client to POST to "/" or "/messages", 
+	// we must prepend "/mcp" so Fiber can route it back correctly.
+	if bytes.Contains(b, []byte("data: /?sessionid=")) {
+		b = bytes.ReplaceAll(b, []byte("data: /?sessionid="), []byte("data: /mcp/?sessionid="))
+	}
+	if bytes.Contains(b, []byte("data: /messages?sessionid=")) {
+		b = bytes.ReplaceAll(b, []byte("data: /messages?sessionid="), []byte("data: /mcp/messages?sessionid="))
+	}
+
 	// INTERCEPT LOG: Print outgoing SSE payload (Ignore blank PINGs to avoid log spam)
 	outStr := string(b)
 	if len(outStr) > 10 && outStr != ":ping\n\n" { 

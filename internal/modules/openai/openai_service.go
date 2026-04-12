@@ -27,11 +27,7 @@ const (
 	// pingPongIdleTimeout: if no data chunk received within this duration, the connection is killed.
 	// This implements "ping-pong" keeping the connection alive during active streaming
 	// but detecting real hangs where Gemini stops sending data.
-	pingPongIdleTimeout = 120 * time.Second
-
-	// pingPongMaxTimeout: absolute maximum request duration regardless of streaming activity.
-	// Prevents infinite hangs on extremely long responses.
-	pingPongMaxTimeout = 5 * time.Minute
+	pingPongIdleTimeout = 5 * time.Minute
 )
 
 // sendWithPingPong sends a message with an idle timeout that resets on each received data chunk.
@@ -40,19 +36,15 @@ const (
 // this implements ping-pong behaviour:
 //   - Each incoming data chunk resets the idle timer
 //   - If no data arrives within idleTimeout, the connection is cancelled (real hang)
-//   - maxTimeout is an absolute upper bound to prevent infinite streaming
+//   - maxTimeout is governed by the parent ctx (e.g., 30 minutes global ceiling)
 func sendWithPingPong(
 	ctx context.Context,
 	session providers.ChatSession,
 	message string,
 	extraOpts ...providers.GenerateOption,
 ) (*providers.Response, error) {
-	// Absolute max context — hard ceiling
-	absCtx, absCancel := context.WithTimeout(ctx, pingPongMaxTimeout)
-	defer absCancel()
-
 	// Idle context — cancelled if no data flows within idleTimeout
-	idleCtx, idleCancel := context.WithCancel(absCtx)
+	idleCtx, idleCancel := context.WithCancel(ctx)
 	defer idleCancel()
 
 	idleTimer := time.NewTimer(pingPongIdleTimeout)
@@ -121,10 +113,13 @@ func (s *OpenAIService) CreateChatCompletion(ctx context.Context, req dto.ChatCo
 		return nil, fmt.Errorf("no valid content in messages")
 	}
 
+	// Inject universal proxy constraints to prevent Gemini from generating unparseable frontend UI components
+	prompt += "\n\n[USER ENVIRONMENT CONSTRAINT]\n1. Strictly avoid using any code execution environments, canvas-based tools, or rendering.\n2. Disable all interactive UI components, including 'Immersive Entry Chips,' dynamic cards, or external media links.\n3. Provide all output exclusively in raw Markdown and structured JSON.\n4. Do not generate any system-invoked interactive elements."
+
 	// Inject tool instruction if requested
 	if len(req.Tools) > 0 {
 		toolPrompt := "\n\n[STRICT TOOL CALLING MODE]\n" +
-			"If you need to use any tools, you MUST respond with a JSON object containing a `tool_calls` array at the end of your response.\n" +
+			"If you need to use a tool to fulfill the request, you MUST provide the tool call instructions as a JSON array named `tool_calls`.\n" +
 			"Example format:\n" +
 			"```json\n" +
 			"{\n" +
@@ -141,15 +136,33 @@ func (s *OpenAIService) CreateChatCompletion(ctx context.Context, req dto.ChatCo
 			"}\n" +
 			"```\n" +
 			"IMPORTANT RULES:\n" +
-			"1. The `tool_calls` field MUST be a JSON array. Never return it as a string.\n" +
-			"2. The `arguments` field MUST be a stringified JSON object.\n" +
-			"3. If you need to clarify something or ask the user for more information, you MUST use the `follow_up` tool if available.\n" +
-			"4. CRITICAL: All URLs in tool arguments MUST be raw strings (e.g., https://google.com). NEVER use Markdown formatting like [label](url).\n" +
-			"5. If providing tool calls, do not add unnecessary conversational text if possible, or keep it separate from the JSON block."
+			"1. If no tool is needed, respond with natural text only.\n" +
+			"2. If tools ARE needed, you MUST include a brief natural text explanation BEFORE the JSON block. Do not leave the content empty.\n" +
+			"3. All URLs in tool arguments MUST be raw strings (e.g., https://google.com). NEVER use Markdown formatting for URLs inside JSON.\n" +
+			"4. CRITICAL: The `tool_calls` block must be valid JSON and properly closed.\n" +
+			"5. Conversational text MUST be outside the JSON block."
 		prompt += toolPrompt
 	}
 
+	if s.cfg.Gemini.LogRawSendGemini {
+		s.log.Info(fmt.Sprintf("\n========== PROMPT SENT TO GEMINI ==========\n%s\n===========================================", prompt))
+	}
+
 	s.log.Info("🚀 2. CALLING GEMINI: Sending prompt to Gemini Web (with multi-account retry)")
+
+	// ─── CHUNKING LOGIC (V18): Prevent bans by splitting large prompts ──────────
+	packSize := s.cfg.Gemini.PackContext
+	if packSize <= 0 {
+		packSize = 32000
+	}
+
+	// Use rune count for approximation of context size as requested
+	if len([]rune(prompt)) > packSize {
+		s.log.Info("📦 Prompt exceeds PackContext threshold. Triggering Multi-Packet Chunking flow.",
+			zap.Int("length", len([]rune(prompt))),
+			zap.Int("threshold", packSize))
+		return s.handleChunkedCompletion(ctx, req, prompt, packSize)
+	}
 
 	opts := []providers.GenerateOption{}
 	if req.Model != "" {
@@ -264,100 +277,340 @@ func (s *OpenAIService) CreateChatCompletion(ctx context.Context, req dto.ChatCo
 		}
 	}()
 
-	// ─── TOOL CALL PROCESSING V13: Prompt-Driven & Correction Loop ─────────────
-	var nativeToolCalls []models.ToolCall
-	var contextText string
-	finishReason := "stop"
+	// ─── FINAL ASSEMBLY & REFINEMENT ──────────────────────────────────────────
+	// Logic lọc tool calls và sửa lỗi tập trung hoàn toàn trong assembleResponse
+	return s.assembleResponse(ctx, req, response, chatSession, releaseWorker, prompt, opts, triedAccounts)
+}
 
-	for retry := 0; retry < 2; retry++ {
-		jsonBlocks, sourceSegments := utils.ExtractAllJSONBlocks(response.Text)
-		contextText = utils.ExtractContextText(response.Text, sourceSegments)
+func (s *OpenAIService) handleChunkedCompletion(ctx context.Context, req dto.ChatCompletionRequest, prompt string, packSize int) (*dto.ChatCompletionResponse, error) {
+	chunks := utils.SplitStringChunks(prompt, packSize)
+	numChunks := len(chunks)
+
+	preamble := fmt.Sprintf("I will send you a long content split into %d packets. For each packet, please simply reply with \"next\" to acknowledge receipt. Do NOT summarize or respond until I have sent all packets. Once I send the last packet, you should synthesize everything and provide a final response according to the original instructions. Do you understand?", numChunks)
+
+	opts := []providers.GenerateOption{}
+	if req.Model != "" {
+		opts = append(opts, providers.WithModel(req.Model))
+	}
+
+	triedAccounts := make(map[string]bool)
+	var lastErr error
+
+	// Try with primary accounts then fallback to guest
+	for attempt := 0; attempt < s.cfg.Gemini.MaxRetries+2; attempt++ {
+		var worker *providers.Worker
+		var acc *providers.AccountConfig
+		var release func()
+		var err error
+
+		worker, acc, release, err = s.client.AcquireWorkerExcluding(ctx, triedAccounts)
+		if err != nil {
+			// Try guest
+			worker, acc, release, err = s.client.AcquireGuestWorker(ctx)
+			if err != nil {
+				break // No more options
+			}
+		}
+
+		triedAccounts[acc.ID] = true
+		session := worker.StartChat(providers.WithChatModel(req.Model))
+
+		cleanupOnFailure := func() {
+			accID := session.GetAccountID()
+			if !strings.Contains(accID, "guest-") {
+				go func() { _ = session.Delete() }()
+			}
+			release()
+		}
+
+		s.log.Info("📡 Starting Multi-Packet Handshake", zap.String("account_id", acc.ID))
+		resp, err := sendWithPingPong(ctx, session, preamble, opts...)
+		if err != nil {
+			s.log.Warn("❌ Handshake failed", zap.String("account_id", acc.ID), zap.Error(err))
+			cleanupOnFailure()
+			lastErr = err
+			continue
+		}
+		s.log.Info("🏓 ping-pong (Handshake confirmed)", zap.String("account_id", acc.ID))
+
+		// Send chunks 1..numChunks-1
+		failed := false
+		for i := 0; i < numChunks-1; i++ {
+			chunkMsg := fmt.Sprintf("[Packet %d/%d]\n\n%s\n\nPlease reply with \"next\".", i+1, numChunks, chunks[i])
+			s.log.Info(fmt.Sprintf("📦 [Gửi gói %d/%d]", i+1, numChunks), zap.String("account_id", acc.ID))
+
+			resp, err = sendWithPingPong(ctx, session, chunkMsg, opts...)
+			if err != nil {
+				s.log.Warn(fmt.Sprintf("❌ Packet %d failed", i+1), zap.String("account_id", acc.ID), zap.Error(err))
+				failed = true
+				break
+			}
+
+			lower := strings.ToLower(resp.Text)
+			if strings.Contains(lower, "next") || strings.Contains(lower, "ok") || strings.Contains(lower, "understand") {
+				s.log.Info("🏓 ping-pong", zap.Int("packet", i+1))
+			}
+		}
+
+		if failed {
+			cleanupOnFailure()
+			continue
+		}
+
+		// Final chunk
+		s.log.Info(fmt.Sprintf("📦 [Gửi gói %d/%d (FINAL)]", numChunks, numChunks), zap.String("account_id", acc.ID))
+		finalMsg := fmt.Sprintf("[Packet %d/%d (FINAL)]\n\n%s\n\nAll packets have been sent. Please now synthesize the information and provide your final response.", numChunks, numChunks, chunks[numChunks-1])
+
+		resp, err = sendWithPingPong(ctx, session, finalMsg, opts...)
+		if err != nil {
+			s.log.Warn("❌ Final packet failed", zap.String("account_id", acc.ID), zap.Error(err))
+			cleanupOnFailure()
+			lastErr = err
+			continue
+		}
+
+		// Re-use standard refining logic to extract tools/content
+		return s.assembleResponse(ctx, req, resp, session, release, prompt, opts, triedAccounts)
+	}
+
+	if lastErr != nil {
+		return nil, fmt.Errorf("multi-packet upload failed: %w", lastErr)
+	}
+	return nil, fmt.Errorf("multi-packet upload failed: all accounts exhausted")
+}
+
+// assembleResponse internalizes the refinement loop and OpenAI payload construction
+func (s *OpenAIService) assembleResponse(
+	ctx context.Context,
+	req dto.ChatCompletionRequest,
+	initialResp *providers.Response,
+	chatSession providers.ChatSession,
+	releaseWorker func(),
+	originalPrompt string,
+	opts []providers.GenerateOption,
+	triedAccounts map[string]bool,
+) (*dto.ChatCompletionResponse, error) {
+	var finalContent string
+	var finalToolCalls []models.ToolCall
+	response := initialResp
+
+	// Extract standard refining parameters from main logic
+	if s.cfg.Gemini.LogRawGeminiOut && response != nil {
+		s.log.Info(fmt.Sprintf("\n========== RAW GEMINI RESPONSE (Initial) ==========\n%s\n===================================================", response.Text))
+	}
+
+	const immersiveChipURL = "http://googleusercontent.com/immersive_entry_chip/0"
+
+	for retry := 0; retry < 5; retry++ {
+		if response == nil {
+			break
+		}
+		rawText := response.Text
+		hadImmersiveChip := strings.Contains(rawText, immersiveChipURL)
+		if hadImmersiveChip {
+			rawText = strings.ReplaceAll(rawText, immersiveChipURL, "")
+		}
+
+		jsonBlocks, sourceSegments := utils.ExtractAllJSONBlocks(rawText)
+		finalContent = utils.ExtractContextText(rawText, sourceSegments)
 
 		var currentToolCalls []models.ToolCall
 		isValid := true
-		foundAny := false
 
+		// Flexible tool parsing (V18 logic)
 		for _, block := range jsonBlocks {
-			var wrapper struct {
-				ToolCalls interface{} `json:"tool_calls"`
-			}
-			if err := json.Unmarshal([]byte(block), &wrapper); err == nil && wrapper.ToolCalls != nil {
-				foundAny = true
-				// Strict check: must be an array
-				rawTC, ok := wrapper.ToolCalls.([]interface{})
-				if !ok {
-					isValid = false
-					s.log.Warn("⚠️ Gemini returned tool_calls as string/object instead of array", zap.String("account_id", response.Metadata["account_id"].(string)))
-					break
+			var rawToolCalls []interface{}
+			var mapWrapper map[string]interface{}
+			if err := json.Unmarshal([]byte(block), &mapWrapper); err == nil {
+				if tc, ok := mapWrapper["tool_calls"].([]interface{}); ok {
+					rawToolCalls = tc
 				}
+			}
+			if len(rawToolCalls) == 0 {
+				var listWrapper []interface{}
+				if err := json.Unmarshal([]byte(block), &listWrapper); err == nil {
+					rawToolCalls = listWrapper
+				}
+			}
 
-				// Re-unmarshal into concrete struct if it's an array
-				var concreteTC []models.ToolCall
-				tcBytes, _ := json.Marshal(rawTC)
-				if err := json.Unmarshal(tcBytes, &concreteTC); err == nil {
-					// V14: Check for Markdown Links in tool calls
-					for _, tc := range concreteTC {
-						if utils.HasMarkdownLink(tc.Function.Arguments) {
-							isValid = false
-							s.log.Warn("⚠️ Markdown Link detected in tool_calls arguments", zap.String("account_id", response.Metadata["account_id"].(string)))
-							break
+			if len(rawToolCalls) > 0 {
+				var tempCalls []models.ToolCall
+				for _, rtc := range rawToolCalls {
+					tcMap, ok := rtc.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					fnMap, ok := tcMap["function"].(map[string]interface{})
+					if !ok {
+						continue
+					}
+					name, _ := fnMap["name"].(string)
+					argsRaw := fnMap["arguments"]
+
+					// --- PHẦN VÁ LỖI ARGUMENTS ---
+					var finalArgs string
+					switch v := argsRaw.(type) {
+					case string:
+						// Nếu là string, kiểm tra xem nó có phải JSON hợp lệ không
+						if json.Valid([]byte(v)) {
+							finalArgs = v
+						} else {
+							// Nếu là text thường, ép về JSON string hợp lệ
+							b, _ := json.Marshal(v)
+							finalArgs = string(b)
 						}
+					case map[string]interface{}, []interface{}:
+						// Nếu Gemini trả về Object/Array trực tiếp, Marshal thành string
+						b, _ := json.Marshal(v)
+						finalArgs = string(b)
+					default:
+						finalArgs = "{}"
 					}
-					if !isValid {
-						break
+
+					// --- PHẦN VÁ LỖI ID & TYPE ---
+					id, _ := tcMap["id"].(string)
+					if id == "" {
+						// Sử dụng UnixNano để tránh xung đột ID trong Roo Code
+						id = fmt.Sprintf("call_%d", time.Now().UnixNano())
 					}
-					currentToolCalls = append(currentToolCalls, concreteTC...)
-				} else {
-					isValid = false
+
+					typ, _ := tcMap["type"].(string)
+					if typ == "" || typ == "tool_call_partial" {
+						typ = "function"
+					}
+
+					if name != "" {
+						tempCalls = append(tempCalls, models.ToolCall{
+							ID:   id,
+							Type: typ,
+							Function: models.FunctionCall{
+								Name:      name,
+								Arguments: finalArgs,
+							},
+						})
+					}
+				}
+				if len(tempCalls) > 0 {
+					currentToolCalls = tempCalls
+					isValid = true
 					break
 				}
 			}
 		}
 
-		if foundAny && !isValid {
-			s.log.Info("🔄 Correction Loop: Requesting Gemini to fix tool_calls/links format...", zap.Int("retry", retry+1))
-			correctionPrompt := "Your previous response contained errors in tool_calls:\n" +
-				"1. All tool_calls MUST be a JSON array, not a string.\n" +
-				"2. All URLs in arguments MUST be raw strings. NEVER use Markdown links like [label](url).\n" +
-				"Please correct and re-output the JSON structure now."
+		// Validation check for Immersive View truncation, junk, or malformed tool_calls
+		shouldRetry := false
+		fixPrompt := ""
 
-			// Send correction request to same chat session
-			response, err = sendWithPingPong(ctx, chatSession, correctionPrompt, opts...)
-			if err != nil {
-				break // Stop on network error
+		if strings.Contains(response.Text, immersiveChipURL) && len(currentToolCalls) == 0 && strings.Contains(rawText, "\"tool_calls\"") {
+			shouldRetry = true
+			fixPrompt = "Your previous response was interrupted by an Immersive View component mid-stream. Please CONTINUE the response exactly where it was cut off."
+		} else if utils.ContainsJunkIndicators(rawText) {
+			shouldRetry = true
+			fixPrompt = "Response contains prohibited interactive UI components. Please provide a clean response in raw Markdown and structured JSON."
+		} else if len(currentToolCalls) == 0 && (strings.Contains(rawText, "\"tool_calls\"") || strings.Contains(rawText, "\"function\"")) {
+			// Đây là trường hợp quan trọng: Gemini có ý định gọi tool nhưng proxy không parse được JSON
+			shouldRetry = true
+			fixPrompt = "nội dung tool_calls của bạn trong tin nhắn trước bị lỗi định dạng yêu cầu đọc lại các prompt hướng dẩn sử dụng đã cung cấp và tuân thủ"
+		} else if len(currentToolCalls) > 0 {
+			for _, tc := range currentToolCalls {
+				if utils.HasMarkdownLink(tc.Function.Arguments) {
+					isValid = false
+					fixPrompt = "Your previous tool_calls contained invalid Markdown links in arguments. Please provide raw string URLs only."
+					break
+				}
 			}
-			continue // Try parsing again
 		}
 
-		// If we reached here, it's either valid or there were no tool calls
-		nativeToolCalls = currentToolCalls
+		if !isValid || shouldRetry {
+			s.log.Warn("⚠️ Response invalid or truncated, attempting self-correction...", zap.Int("retry", retry+1))
+
+			if fixPrompt == "" {
+				fixPrompt = "Your previous response was malformed. Please provide the COMPLETE and CORRECT [tool_calls] JSON block now."
+			}
+
+			// Nested worker-swap retry logic (preservation of conversation context)
+			maxSwapRetries := 2
+			for swapAttempt := 0; swapAttempt <= maxSwapRetries; swapAttempt++ {
+				var err error
+				response, err = sendWithPingPong(ctx, chatSession, fixPrompt, opts...)
+				if err == nil {
+					break
+				}
+
+				if swapAttempt == maxSwapRetries {
+					return nil, err
+				}
+
+				// Preservation of conversation context on account swap
+				meta := chatSession.GetMetadata()
+				if releaseWorker != nil {
+					releaseWorker()
+				}
+
+				var newWorker *providers.Worker
+				var newAcc *providers.AccountConfig
+				newWorker, newAcc, releaseWorker, err = s.client.AcquireWorkerExcluding(ctx, triedAccounts)
+				if err != nil {
+					return nil, err
+				}
+				triedAccounts[newAcc.ID] = true
+				chatSession = newWorker.StartChat(providers.WithChatModel(req.Model), providers.WithChatMetadata(meta))
+			}
+
+			if hadImmersiveChip && response != nil {
+				continuation := strings.TrimSpace(response.Text)
+				continuation = strings.TrimPrefix(continuation, "```json")
+				continuation = strings.TrimPrefix(continuation, "```")
+				continuation = strings.TrimSuffix(continuation, "```")
+				response.Text = strings.TrimRight(rawText, " \t\n\r") + strings.TrimSpace(continuation)
+			}
+			continue
+		}
+
+		finalToolCalls = currentToolCalls
 		break
 	}
 
-	if len(nativeToolCalls) > 0 {
+	// Assembly
+	finishReason := "stop"
+	if len(finalToolCalls) > 0 {
 		finishReason = "tool_calls"
 	}
-
-	// 5. Hollow Guard (V12)
-	if len(nativeToolCalls) == 0 && contextText == "" {
-		if response.Text != "" {
-			contextText = response.Text
-		} else {
-			contextText = "... (Empty response) ..."
-		}
+	finalChoices := []dto.Choice{
+		{
+			Index: 0,
+			Message: models.Message{
+				Role:    "assistant",
+				Content: finalContent,
+				//Type:      "text",
+				ToolCalls: finalToolCalls,
+			},
+			FinishReason: finishReason,
+		},
 	}
 
-	// 6. Token calculation
-	pTokens := len(prompt) / 4
-	if pTokens == 0 {
-		pTokens = 1
+	// Final content assignment to ensure UI visibility in tools like Roo Code
+	if finalContent == "" {
+		// If clean extraction failed, use raw response text as fallback
+		finalChoices[0].Message.Content = response.Text
+	} else {
+		finalChoices[0].Message.Content = finalContent
 	}
-	cTokens := len(contextText) / 4
-	for _, tc := range nativeToolCalls {
-		cTokens += len(tc.Function.Arguments) / 4
-	}
-	if cTokens == 0 {
-		cTokens = 1
+
+	// Double-safety: if still empty but tools exist, provide a status message
+	//if finalChoices[0].Message.Content == "" && len(finalToolCalls) > 0 {
+	//	finalChoices[0].Message.Content = "I am calling tools to assist with your request..."
+	//}
+
+	// Logic: Precise token counting based on the ACTUAL payload being returned
+	finalChoicesMsg := finalChoices[0].Message
+	toolCallsJSON, _ := json.Marshal(finalChoicesMsg.ToolCalls)
+
+	pTokens := len([]rune(originalPrompt)) / 4
+	cTokens := (len([]rune(finalChoicesMsg.Content)) + len([]rune(string(toolCallsJSON)))) / 4
+	if cTokens == 0 && (len(finalChoicesMsg.Content) > 0 || len(finalChoicesMsg.ToolCalls) > 0) {
+		cTokens = 1 // Ensure at least 1 token if there is output
 	}
 
 	finalResponse := &dto.ChatCompletionResponse{
@@ -365,44 +618,28 @@ func (s *OpenAIService) CreateChatCompletion(ctx context.Context, req dto.ChatCo
 		Object:  "chat.completion",
 		Created: time.Now().Unix(),
 		Model:   req.Model,
-		Choices: []dto.Choice{
-			{
-				Index: 0,
-				Message: models.Message{
-					Role:      "assistant",
-					Content:   contextText,
-					ToolCalls: nativeToolCalls,
-				},
-				FinishReason: finishReason,
-			},
-		},
+		Choices: finalChoices,
 		Usage: models.Usage{
-			PromptTokens:     pTokens,
-			CompletionTokens: cTokens,
-			TotalTokens:      pTokens + cTokens,
-			PromptTokensDetails: models.PromptDetails{
-				TextTokens: pTokens,
-			},
-			CompletionTokensDetails: models.CompletionDetails{
-				TextTokens:      cTokens,
-				ReasoningTokens: 0,
-			},
+			PromptTokens: pTokens, CompletionTokens: cTokens, TotalTokens: pTokens + cTokens,
 		},
 		SystemFingerprint: "fp_gemini_web_v1",
 	}
 
-	// Auto-delete
+	// Logic: Log the final payload if requested by the user
+	if s.cfg.Gemini.LogRawPayloadOut {
+		b, _ := json.MarshalIndent(finalResponse, "", "  ")
+		s.log.Info(fmt.Sprintf("\n========== FINAL PAYLOAD OUT (OpenAI Format) ==========\n%s\n=======================================================", string(b)))
+	}
+
+	// Always prioritize cleanup for multi-turn or chunked uploads to prevent clutter
+	// [OPTIMIZATION] Skip deletion for guest accounts as Google doesn't persist them
 	latestMeta := chatSession.GetMetadata()
-	if s.cfg.Gemini.AutoDeleteChat && latestMeta != nil && latestMeta.ConversationID != "" {
+	accID := chatSession.GetAccountID()
+	if !strings.Contains(accID, "guest-") && (s.cfg.Gemini.AutoDeleteChat || len(originalPrompt) > s.cfg.Gemini.PackContext) && latestMeta != nil && latestMeta.ConversationID != "" {
 		go func(sess providers.ChatSession) { _ = sess.Delete() }(chatSession)
 	}
 
-	if s.cfg.Gemini.LogRawRequests {
-		resBytes, _ := json.MarshalIndent(finalResponse, "", "  ")
-		s.log.Info(fmt.Sprintf("Response Payload:\n%s\nRaw Gemini text:\n%s", string(resBytes), response.Text))
-	}
-
-	s.log.Info("📤 RETURN TO CLIENT", zap.Int("tools", len(nativeToolCalls)))
+	releaseWorker()
 	return finalResponse, nil
 }
 
